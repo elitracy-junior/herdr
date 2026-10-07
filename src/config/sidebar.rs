@@ -120,6 +120,9 @@ pub enum AgentSidebarToken {
         token: Box<AgentSidebarToken>,
         style: SidebarTokenStyle,
         rules: Vec<SidebarTokenRule>,
+        /// Metadata token consulted in place of a non-text built-in. Only
+        /// `state_icon` accepts one; see `RawStyledSidebarToken::override_token`.
+        override_token: Option<String>,
     },
 }
 
@@ -135,10 +138,22 @@ pub enum SpaceSidebarToken {
         token: Box<SpaceSidebarToken>,
         style: SidebarTokenStyle,
         rules: Vec<SidebarTokenRule>,
+        /// Metadata token consulted in place of a non-text built-in. Only
+        /// `state_icon` accepts one; see `RawStyledSidebarToken::override_token`.
+        override_token: Option<String>,
     },
 }
 
 impl AgentSidebarToken {
+    /// The metadata token that stands in for this one when the workspace or
+    /// pane reports it, if the layout configured a substitute.
+    pub(crate) fn override_token(&self) -> Option<&str> {
+        match self {
+            Self::Styled { override_token, .. } => override_token.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
@@ -155,6 +170,15 @@ impl AgentSidebarToken {
 }
 
 impl SpaceSidebarToken {
+    /// The metadata token that stands in for this one when the workspace or
+    /// pane reports it, if the layout configured a substitute.
+    pub(crate) fn override_token(&self) -> Option<&str> {
+        match self {
+            Self::Styled { override_token, .. } => override_token.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
@@ -182,6 +206,22 @@ struct RawStyledSidebarToken {
     dim: Option<bool>,
     #[serde(default)]
     rules: Vec<SidebarTokenRule>,
+    /// `$name` metadata token rendered in place of this one whenever the space
+    /// or pane reports a non-empty value for it. `state_icon` draws a glyph
+    /// chosen from agent state rather than a string, so it is otherwise the one
+    /// token a layout cannot vary per space; a substitute makes it text-valued,
+    /// which is also what lets rules apply to it.
+    #[serde(default)]
+    override_token: Option<String>,
+}
+
+/// One configured token occurrence, after validation and before it is matched
+/// against the built-in names for its sidebar.
+struct SidebarTokenParts {
+    name: String,
+    style: Option<SidebarTokenStyle>,
+    rules: Vec<SidebarTokenRule>,
+    override_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -192,27 +232,49 @@ enum RawSidebarToken {
 }
 
 impl RawSidebarToken {
-    fn parts(self) -> Result<(String, Option<SidebarTokenStyle>, Vec<SidebarTokenRule>), String> {
+    fn parts(self) -> Result<SidebarTokenParts, String> {
         match self {
-            Self::Plain(token) => Ok((token, None, Vec::new())),
+            Self::Plain(token) => Ok(SidebarTokenParts {
+                name: token,
+                style: None,
+                rules: Vec::new(),
+                override_token: None,
+            }),
             Self::Styled(token) => {
                 if token.rules.len() > 16 {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
+                let override_token = match token.override_token {
+                    None => None,
+                    Some(name) => {
+                        if token.token != "state_icon" {
+                            return Err(
+                                "only state_icon accepts an override_token; every other token \
+                                 already renders a value"
+                                    .into(),
+                            );
+                        }
+                        Some(parse_override_token(&name)?)
+                    }
+                };
+                // A substituted state_icon resolves to the metadata value, so it
+                // is text-valued and rules work on it like any other token.
                 if !token.rules.is_empty()
+                    && override_token.is_none()
                     && matches!(token.token.as_str(), "state_icon" | "git_status")
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
-                Ok((
-                    token.token,
-                    Some(SidebarTokenStyle {
+                Ok(SidebarTokenParts {
+                    name: token.token,
+                    style: Some(SidebarTokenStyle {
                         fg: token.fg,
                         bold: token.bold,
                         dim: token.dim,
                     }),
-                    token.rules,
-                ))
+                    rules: token.rules,
+                    override_token,
+                })
             }
         }
     }
@@ -241,10 +303,30 @@ where
     Ok(T::from(name.to_string()))
 }
 
+/// Validate an `override_token` and return it with the `$` stripped, matching
+/// how `Custom` tokens are stored.
+fn parse_override_token(value: &str) -> Result<String, String> {
+    let Some(name) = value.strip_prefix('$') else {
+        return Err(format!(
+            "unknown sidebar override_token `{value}`; custom tokens must start with `$`"
+        ));
+    };
+    if name.is_empty()
+        || name.len() > 32
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err(format!("invalid custom sidebar token `{value}`"));
+    }
+    Ok(name.to_string())
+}
+
 fn serialize_styled_token<S>(
     name: String,
     style: SidebarTokenStyle,
     rules: &[SidebarTokenRule],
+    override_token: Option<&str>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -264,6 +346,9 @@ where
     }
     if !rules.is_empty() {
         map.serialize_entry("rules", rules)?;
+    }
+    if let Some(name) = override_token {
+        map.serialize_entry("override_token", &format!("${name}"))?;
     }
     map.end()
 }
@@ -306,7 +391,14 @@ impl Serialize for AgentSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(agent_token_name(token), *style, rules, serializer),
+                override_token,
+            } => serialize_styled_token(
+                agent_token_name(token),
+                *style,
+                rules,
+                override_token.as_deref(),
+                serializer,
+            ),
             token => serializer.serialize_str(&agent_token_name(token)),
         }
     }
@@ -323,11 +415,11 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
     where
         D: serde::Deserializer<'de>,
     {
-        let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
+        let parts = RawSidebarToken::deserialize(deserializer)?
             .parts()
             .map_err(serde::de::Error::custom)?;
         let token = parse_sidebar_token(
-            value,
+            parts.name,
             &[
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
@@ -341,10 +433,11 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
             ],
         )
         .map_err(serde::de::Error::custom)?;
-        Ok(style.map_or(token.clone(), |style| Self::Styled {
+        Ok(parts.style.map_or(token.clone(), |style| Self::Styled {
             token: Box::new(token),
             style,
-            rules,
+            rules: parts.rules,
+            override_token: parts.override_token,
         }))
     }
 }
@@ -359,7 +452,14 @@ impl Serialize for SpaceSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(space_token_name(token), *style, rules, serializer),
+                override_token,
+            } => serialize_styled_token(
+                space_token_name(token),
+                *style,
+                rules,
+                override_token.as_deref(),
+                serializer,
+            ),
             token => serializer.serialize_str(&space_token_name(token)),
         }
     }
@@ -376,11 +476,11 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
     where
         D: serde::Deserializer<'de>,
     {
-        let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
+        let parts = RawSidebarToken::deserialize(deserializer)?
             .parts()
             .map_err(serde::de::Error::custom)?;
         let token = parse_sidebar_token(
-            value,
+            parts.name,
             &[
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
@@ -390,10 +490,11 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
             ],
         )
         .map_err(serde::de::Error::custom)?;
-        Ok(style.map_or(token.clone(), |style| Self::Styled {
+        Ok(parts.style.map_or(token.clone(), |style| Self::Styled {
             token: Box::new(token),
             style,
-            rules,
+            rules: parts.rules,
+            override_token: parts.override_token,
         }))
     }
 }
@@ -658,6 +759,36 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
                 .join(",");
             let input = format!("[agents]\nrows = [[{{ token = 'machine', rules = [{rules}] }}]]");
             assert_eq!(toml::from_str::<SidebarConfig>(&input).is_ok(), count == 16);
+        }
+    }
+
+    #[test]
+    fn state_icon_override_round_trips_and_unlocks_rules() {
+        let input = r##"
+[spaces]
+rows = [[{ token = "state_icon", override_token = "$review", rules = [{ contains = "pr", fg = "#f0f" }] }, "workspace"]]
+[agents]
+rows = [[{ token = "state_icon", override_token = "$marker" }]]
+"##;
+        let config: SidebarConfig = toml::from_str(input).expect("state_icon override config");
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains("override_token"));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+    }
+
+    #[test]
+    fn rejects_overrides_on_other_tokens_and_malformed_names() {
+        // Every other token already renders a value, so a substitute is meaningless.
+        for token in ["workspace", "branch", "git_status", "state_text", "$custom"] {
+            let input =
+                format!("[spaces]\nrows = [[{{ token = '{token}', override_token = '$review' }}]]");
+            assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{token}");
+        }
+        for name in ["review", "", "$", "$has space", "$has/slash"] {
+            let input = format!(
+                "[spaces]\nrows = [[{{ token = 'state_icon', override_token = '{name}' }}]]"
+            );
+            assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{name}");
         }
     }
 

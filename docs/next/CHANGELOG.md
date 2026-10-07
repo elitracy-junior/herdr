@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `state_icon` accepts an `override_token` naming a `$name` metadata token, rendered in its place whenever a space or pane reports a non-empty value for it. The glyph is otherwise chosen from agent state alone, so a layout had no way to mark one space apart from another; a reporter can now give a space its own icon without giving up the slot. The substitute is drawn in the state's colour and, being text-valued, accepts `rules`.
+
 ## [0.9.3] - 2026-09-29
 
 This is a hotfix release for v0.9.2. See the v0.9.2 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.2
