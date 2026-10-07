@@ -432,7 +432,23 @@ The first matching rule wins. Its specified style fields override the occurrence
 
 `gt` and `lt` take finite numeric thresholds and compare strictly greater or less, not equal. Values must parse completely as finite numbers; decimal and exponent forms work, but whitespace, units, `NaN`, and infinity do not match. `ignore_case` is not accepted on numeric rules. Comparisons use floating-point numbers, not exact large-integer arithmetic.
 
-Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
+Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules, because neither renders a value a rule could match. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
+
+### Substituting the state icon
+
+`state_icon` draws a glyph chosen from agent state, so every space in the same state shows the same mark. Give it an `override_token` naming a `$name` metadata token and a space that reports a non-empty value for it renders that value in the icon's place instead:
+
+```toml
+[ui.sidebar.spaces]
+rows = [[{ token = "state_icon", override_token = "$review" }, "workspace"], ["$ci", "$pr"]]
+```
+
+```sh
+herdr workspace report-metadata w12 --source mytool --token review=''
+```
+
+Spaces that report nothing keep their state glyph, so the column stays aligned and only the marked spaces change. The substitute is drawn in the state's own colour, which keeps agent state readable through the new glyph; `fg`, `bold`, and `dim` override that as usual. Because the substituted token resolves to text, it also accepts `rules` — matching the reported value — while a plain `state_icon` still does not. Only `state_icon` accepts `override_token`; every other token already renders a value of its own.
+
 
 `row_gap` controls the blank terminal rows between entries, independently for the Agent and Space panels. It defaults to `0`, which packs entries together; set it to `1` to restore the previous spacing. It does not add spacing between the content lines declared in `rows`. Consecutive indented worktree children remain packed as one Space group.
 

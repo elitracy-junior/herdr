@@ -12,6 +12,10 @@ pub(crate) struct ResolvedToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedTokenKind {
     StateIcon,
+    /// `state_icon` standing in for itself with a metadata value, so a space can
+    /// carry its own glyph. Text-valued, so rules apply; laid out and spaced as
+    /// the state icon it replaces.
+    StateIconOverride(String),
     StateText(String),
     Machine(String),
     Workspace(String),
@@ -20,14 +24,18 @@ pub(crate) enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
     Custom(String),
 }
 
 impl ResolvedTokenKind {
     fn text_value(&self) -> Option<&str> {
         match self {
-            Self::StateText(value)
+            Self::StateIconOverride(value)
+            | Self::StateText(value)
             | Self::Machine(value)
             | Self::Workspace(value)
             | Self::Tab(value)
@@ -49,6 +57,39 @@ impl ResolvedToken {
     #[cfg(test)]
     pub(super) fn unstyled(kind: ResolvedTokenKind) -> Self {
         Self::new(kind, SidebarTokenStyle::default())
+    }
+}
+
+/// `state_icon` renders a glyph picked from agent state, which is the same for
+/// every space in that state. A layout may name a metadata token to stand in
+/// for it, letting a space mark itself -- a review, a deploy, whatever the
+/// reporter means by it -- without giving up the slot.
+fn state_icon_kind<T: StateIconOverridable>(
+    configured: &T,
+    tokens: &std::collections::HashMap<String, String>,
+) -> ResolvedTokenKind {
+    configured
+        .override_token()
+        .and_then(|name| tokens.get(name))
+        .filter(|value| !value.is_empty())
+        .map_or(ResolvedTokenKind::StateIcon, |value| {
+            ResolvedTokenKind::StateIconOverride(value.clone())
+        })
+}
+
+trait StateIconOverridable {
+    fn override_token(&self) -> Option<&str>;
+}
+
+impl StateIconOverridable for AgentSidebarToken {
+    fn override_token(&self) -> Option<&str> {
+        Self::override_token(self)
+    }
+}
+
+impl StateIconOverridable for SpaceSidebarToken {
+    fn override_token(&self) -> Option<&str> {
+        Self::override_token(self)
     }
 }
 
@@ -78,7 +119,9 @@ pub(crate) fn agent_rows(
                 .filter_map(|configured| {
                     let (token, style) = configured.parts();
                     let kind = match token {
-                        AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        AgentSidebarToken::StateIcon => {
+                            Some(state_icon_kind(configured, context.tokens))
+                        }
                         AgentSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(state_text.to_string()))
                         }
@@ -143,7 +186,9 @@ pub(crate) fn space_rows(
                 .filter_map(|configured| {
                     let (token, style) = configured.parts();
                     let kind = match token {
-                        SpaceSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        SpaceSidebarToken::StateIcon => {
+                            Some(state_icon_kind(configured, context.tokens))
+                        }
                         SpaceSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
                         }
@@ -178,8 +223,10 @@ pub(crate) fn space_rows(
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
-    if matches!(previous.kind, ResolvedTokenKind::StateIcon)
-        || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
+    if matches!(
+        previous.kind,
+        ResolvedTokenKind::StateIcon | ResolvedTokenKind::StateIconOverride(_)
+    ) || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
         " "
     } else {
@@ -385,6 +432,70 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             );
             assert_eq!(rows.len(), count);
         }
+    }
+
+    #[test]
+    fn state_icon_override_substitutes_only_when_reported() {
+        let config: SpacesSidebarConfig = toml::from_str(
+            r##"
+rows = [[{ token = "state_icon", override_token = "$review" }, "workspace"]]
+"##,
+        )
+        .unwrap();
+        let rows_for = |tokens: &std::collections::HashMap<String, String>| {
+            space_rows(
+                &config,
+                SpaceTokenContext {
+                    workspace: "repo",
+                    branch: None,
+                    state_text: "idle",
+                    ahead_behind: None,
+                    suppress_git_details: false,
+                    tokens,
+                },
+            )
+        };
+
+        let mut tokens = std::collections::HashMap::new();
+        assert_eq!(rows_for(&tokens)[0][0].kind, ResolvedTokenKind::StateIcon);
+
+        // An empty value is the reporter clearing the mark, not a blank glyph.
+        tokens.insert("review".into(), String::new());
+        assert_eq!(rows_for(&tokens)[0][0].kind, ResolvedTokenKind::StateIcon);
+
+        tokens.insert("review".into(), "@".into());
+        let rows = rows_for(&tokens);
+        assert_eq!(
+            rows[0][0].kind,
+            ResolvedTokenKind::StateIconOverride("@".into())
+        );
+        // The substitute holds the icon's slot, so it keeps the icon's spacing.
+        assert_eq!(separator(&rows[0][0], &rows[0][1]), " ");
+    }
+
+    #[test]
+    fn state_icon_override_is_text_valued_so_rules_apply() {
+        let config: SpacesSidebarConfig = toml::from_str(
+            r##"
+rows = [[{ token = "state_icon", override_token = "$review", rules = [{ equals = "@", hide = true }] }, "workspace"]]
+"##,
+        )
+        .unwrap();
+        let mut tokens = std::collections::HashMap::new();
+        tokens.insert("review".into(), "@".into());
+        let rows = space_rows(
+            &config,
+            SpaceTokenContext {
+                workspace: "repo",
+                branch: None,
+                state_text: "idle",
+                ahead_behind: None,
+                suppress_git_details: false,
+                tokens: &tokens,
+            },
+        );
+        assert_eq!(rows[0].len(), 1);
+        assert_eq!(rows[0][0].kind, ResolvedTokenKind::Workspace("repo".into()));
     }
 
     #[test]
