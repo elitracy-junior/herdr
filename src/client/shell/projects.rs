@@ -109,21 +109,21 @@ pub(super) fn project_rows(
                     })
                 })
                 .collect::<Vec<_>>();
-        // A Space's own state icon is derived from its agents, so a Space with
-        // a single agent would say the same thing twice -- which is most Spaces.
-        // List agents only where there are several and the Space icon can no
-        // longer speak for all of them.
-        if pane_ids.len() < 2 {
+        if pane_ids.is_empty() {
             continue;
         }
+        // One agent needs no fold: the header would be taller than the row it
+        // hides. Several get one, so a busy Space can be folded shut.
         let collapsed = collapsed_agent_lists.contains(&workspace_id);
-        rows.push(ProjectRow::AgentFold {
-            workspace_id: workspace_id.clone(),
-            count: pane_ids.len(),
-            collapsed,
-        });
-        if collapsed {
-            continue;
+        if pane_ids.len() > 1 {
+            rows.push(ProjectRow::AgentFold {
+                workspace_id: workspace_id.clone(),
+                count: pane_ids.len(),
+                collapsed,
+            });
+            if collapsed {
+                continue;
+            }
         }
         for pane_id in pane_ids {
             if let Some(row) = agent_row_with(snapshot, &pane_id, None, &nested) {
@@ -285,10 +285,10 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_agent_is_left_to_its_space_icon() {
+    fn a_lone_agent_shows_without_a_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1")];
         let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
-        assert_eq!(kinds(&rows), ["workspace"]);
+        assert_eq!(kinds(&rows), ["workspace", "agent"]);
     }
 }
