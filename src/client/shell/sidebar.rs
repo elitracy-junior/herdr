@@ -261,10 +261,10 @@ pub(crate) fn render_sidebar(
     let gaps = entries
         .iter()
         .enumerate()
-        .map(|(index, _)| {
+        .map(|(index, entry)| {
             entries.get(index + 1).map_or(0, |next| {
                 if projects {
-                    next.gap_before()
+                    super::projects::gap_between(entry, next)
                 } else {
                     u16::from(next.starts_group()) * config.spaces.row_gap
                 }
@@ -319,6 +319,21 @@ pub(crate) fn render_sidebar(
                 let Some(workspace) = snapshot.workspaces.get(entry.index) else {
                     continue;
                 };
+                // A rule through the gap before each project after the first,
+                // so the eye lands on the boundary rather than counting blanks.
+                if projects && !entry.indented && entry_position > 0 && y > body.y {
+                    let rule_y = y.saturating_sub(1);
+                    if rule_y >= body.y {
+                        put_text(
+                            buffer,
+                            body.x,
+                            rule_y,
+                            content_width,
+                            &"\u{2500}".repeat(content_width as usize),
+                            Style::default().fg(palette.surface_dim),
+                        );
+                    }
+                }
                 let status =
                     displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
                 let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
@@ -386,7 +401,7 @@ pub(crate) fn render_sidebar(
         }
         let gap = entries.get(entry_position + 1).map_or(0, |next| {
             if projects {
-                next.gap_before()
+                super::projects::gap_between(project_row, next)
             } else {
                 u16::from(next.starts_group()) * config.spaces.row_gap
             }

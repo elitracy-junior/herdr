@@ -102,16 +102,24 @@ impl ProjectRow {
         matches!(self, Self::Workspace(entry) if !entry.indented)
     }
 
-    /// Blank rows before this entry in the Projects tree. Separation is what
-    /// shows the grouping here, in place of the tree connectors the Spaces
-    /// panel draws, so a Space is parted from the one above it and a project
-    /// from the project above it. An agent stays packed against its Space.
-    pub(super) fn gap_before(&self) -> u16 {
-        match self {
-            Self::Workspace(entry) if !entry.indented => 2,
-            Self::Workspace(_) => 1,
-            _ => 0,
-        }
+    /// Whether this entry heads a project rather than sitting inside one.
+    fn is_project_header(&self) -> bool {
+        matches!(self, Self::Workspace(entry) if !entry.indented)
+    }
+}
+
+/// Blank rows between two entries in the Projects tree. Separation is what
+/// shows the grouping here, in place of the tree connectors the Spaces panel
+/// draws, so it has to say what belongs together as well as what does not: a
+/// project stands well clear of the project above it, its first Space stays
+/// attached to it, later Spaces are parted from their siblings, and an agent
+/// hugs the Space it runs in.
+pub(super) fn gap_between(previous: &ProjectRow, next: &ProjectRow) -> u16 {
+    match next {
+        ProjectRow::Workspace(entry) if !entry.indented => 2,
+        ProjectRow::Workspace(_) if previous.is_project_header() => 0,
+        ProjectRow::Workspace(_) => 1,
+        _ => 0,
     }
 }
 
@@ -372,6 +380,47 @@ mod tests {
                 agent_icon(AgentStatus::Idle, 0, &palette).0
             );
         }
+    }
+
+    #[test]
+    fn a_project_is_parted_from_the_one_above_it() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = vec![agent("pane_1", "ws_1")];
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let project = ProjectRow::Workspace(WorkspaceEntry {
+            index: 0,
+            indented: false,
+            last_child: false,
+        });
+        let space = ProjectRow::Workspace(WorkspaceEntry {
+            index: 0,
+            indented: true,
+            last_child: false,
+        });
+        assert_eq!(
+            gap_between(&space, &project),
+            2,
+            "a project stands clear of the one above it"
+        );
+        assert_eq!(
+            gap_between(&project, &space),
+            0,
+            "a project's first space stays attached to it"
+        );
+        assert_eq!(
+            gap_between(&space, &space),
+            1,
+            "sibling spaces are parted from each other"
+        );
+        let agent = rows
+            .iter()
+            .find(|r| matches!(r, ProjectRow::Agent(_)))
+            .unwrap();
+        assert_eq!(
+            gap_between(&space, agent),
+            0,
+            "an agent hugs the space it runs in"
+        );
     }
 
     #[test]
