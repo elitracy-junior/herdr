@@ -23,6 +23,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
+    /// One Projects tree instead of the split Spaces/Agents panels.
+    pub(super) projects_sidebar: bool,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
@@ -94,6 +96,8 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    /// "N agents" folds in the Projects tree, by workspace id.
+    pub(super) agent_folds: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -868,6 +872,10 @@ pub(crate) struct ClientShellState {
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) collapsed_groups: HashSet<String>,
+    /// Workspace ids whose nested agent list is folded away in the Projects
+    /// tree. Keyed by workspace rather than repo, because a space's agents are
+    /// its own; `collapsed_groups` folds the repo one level above.
+    pub(super) collapsed_agent_lists: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
@@ -1033,6 +1041,7 @@ impl ClientShellState {
             workspace_press: None,
             tab_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
+            collapsed_agent_lists: preferences.collapsed_agent_lists.into_iter().collect(),
             remote_collapsed_groups,
             workspace_scroll: 0,
             agent_scroll: 0,

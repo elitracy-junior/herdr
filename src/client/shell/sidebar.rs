@@ -211,22 +211,40 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    // The Projects tree already holds the agents, so it takes the whole sidebar
+    // and leaves no section divider to drag.
+    let projects = config.projects_sidebar;
+    let (workspace_area, detail_area) = if projects {
+        (
+            Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height),
+            Rect::default(),
+        )
+    } else {
+        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split)
+    };
+    hits.sidebar_section_divider = if projects {
+        Rect::default()
+    } else {
+        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split)
+    };
     put_text(
         buffer,
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " spaces",
+        if projects { " projects" } else { " spaces" },
         Style::default()
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let entries = super::projects::project_rows(
+        snapshot,
+        config,
+        state.collapsed_groups,
+        state.collapsed_agent_lists,
+        projects,
+    );
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -238,31 +256,15 @@ pub(crate) fn render_sidebar(
     hits.workspace_body = body;
     let row_heights = entries
         .iter()
-        .map(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .map(|workspace| {
-                    workspace_rows(
-                        workspace,
-                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
-                        entry.indented,
-                        &config.spaces,
-                    )
-                    .len()
-                    .max(1)
-                    .min(u16::MAX as usize) as u16
-                })
-                .unwrap_or(1)
-        })
+        .map(|entry| entry.height(snapshot, config))
         .collect::<Vec<_>>();
     let gaps = entries
         .iter()
         .enumerate()
         .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
+            entries.get(index + 1).map_or(0, |next| {
+                u16::from(next.starts_group()) * config.spaces.row_gap
+            })
         })
         .collect::<Vec<_>>();
     let mut metrics = super::scroll::list_scroll_metrics(
@@ -272,10 +274,13 @@ pub(crate) fn render_sidebar(
         *state.workspace_scroll,
     );
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
-        if let Some(target) = entries
-            .iter()
-            .position(|entry| snapshot.workspaces[entry.index].focused)
-        {
+        if let Some(target) = entries.iter().position(|entry| match entry {
+            super::projects::ProjectRow::Workspace(entry) => snapshot
+                .workspaces
+                .get(entry.index)
+                .is_some_and(|workspace| workspace.focused),
+            _ => false,
+        }) {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
                 &row_heights,
                 &gaps,
@@ -299,59 +304,83 @@ pub(crate) fn render_sidebar(
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let mut y = body.y;
-    for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
-        let Some(workspace) = snapshot.workspaces.get(entry.index) else {
-            continue;
-        };
-        let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+    for (entry_position, project_row) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+        let row_height = project_row.height(snapshot, config).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
         }
         let rect = Rect::new(body.x, y, content_width, row_height);
-        let selected = state.selected_workspace_id.is_some_and(|target| {
-            target.matches(state.active_endpoint_id, &workspace.workspace_id)
-        });
-        let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
-        } else if dragged {
-            buffer.set_style(rect, Style::default().bg(palette.surface1));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+        match project_row {
+            super::projects::ProjectRow::Workspace(entry) => {
+                let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+                    continue;
+                };
+                let status =
+                    displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
+                let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+                let selected = state.selected_workspace_id.is_some_and(|target| {
+                    target.matches(state.active_endpoint_id, &workspace.workspace_id)
+                });
+                let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+                if selected {
+                    buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+                } else if dragged {
+                    buffer.set_style(rect, Style::default().bg(palette.surface1));
+                } else if workspace.focused {
+                    buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+                }
+                render_workspace_rows(
+                    buffer,
+                    rect,
+                    status,
+                    config.status_indicators,
+                    entry,
+                    rows,
+                    workspace.focused,
+                    selected,
+                    state.selected_workspace_id.is_some(),
+                    dragged,
+                    palette,
+                );
+                let group_toggle = render_parent_group_toggle(
+                    buffer,
+                    rect,
+                    snapshot,
+                    entry.index,
+                    state.collapsed_groups,
+                    palette,
+                );
+                hits.workspaces.push(WorkspaceHit {
+                    rect,
+                    endpoint_id: ClientEndpointId::Local,
+                    workspace_id: workspace.workspace_id.clone(),
+                    indented: entry.indented,
+                    group_toggle,
+                });
+            }
+            super::projects::ProjectRow::AgentFold {
+                workspace_id,
+                count,
+                collapsed,
+            } => {
+                super::projects::render_agent_fold(buffer, rect, *count, *collapsed, palette);
+                hits.agent_folds.push((rect, workspace_id.clone()));
+            }
+            super::projects::ProjectRow::Agent(row) => {
+                let indent = super::projects::AGENT_INDENT.min(rect.width);
+                let agent_rect = Rect::new(
+                    rect.x.saturating_add(indent),
+                    rect.y,
+                    rect.width.saturating_sub(indent),
+                    rect.height,
+                );
+                super::agent_sidebar::render_agent_row(buffer, agent_rect, row, config);
+                hits.agents.push((agent_rect, row.pane_id.clone()));
+            }
         }
-        render_workspace_rows(
-            buffer,
-            rect,
-            status,
-            config.status_indicators,
-            entry,
-            rows,
-            workspace.focused,
-            selected,
-            state.selected_workspace_id.is_some(),
-            dragged,
-            palette,
-        );
-        let group_toggle = render_parent_group_toggle(
-            buffer,
-            rect,
-            snapshot,
-            entry.index,
-            state.collapsed_groups,
-            palette,
-        );
-        hits.workspaces.push(WorkspaceHit {
-            rect,
-            endpoint_id: ClientEndpointId::Local,
-            workspace_id: workspace.workspace_id.clone(),
-            indented: entry.indented,
-            group_toggle,
+        let gap = entries.get(entry_position + 1).map_or(0, |next| {
+            u16::from(next.starts_group()) * config.spaces.row_gap
         });
-        let gap = entries
-            .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
         y = y.saturating_add(row_height + gap);
     }
 
@@ -430,14 +459,16 @@ pub(crate) fn render_sidebar(
         }
     }
 
-    super::render_agent_panel(
-        buffer,
-        detail_area,
-        snapshot,
-        config,
-        state.agent_scroll,
-        hits,
-    );
+    if !projects {
+        super::render_agent_panel(
+            buffer,
+            detail_area,
+            snapshot,
+            config,
+            state.agent_scroll,
+            hits,
+        );
+    }
 
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),

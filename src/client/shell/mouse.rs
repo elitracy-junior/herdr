@@ -2059,6 +2059,22 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
+                // The agent fold sits on its own row, so test it before the
+                // workspace rows it is nested under.
+                let agent_fold = self
+                    .hits
+                    .agent_folds
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| workspace_id.clone());
+                if let Some(workspace_id) = agent_fold {
+                    if !self.collapsed_agent_lists.remove(&workspace_id) {
+                        self.collapsed_agent_lists.insert(workspace_id);
+                    }
+                    outcome.repaint = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
                 let group_toggle = self.hits.workspaces.iter().find_map(|hit| {
                     let (rect, key) = hit.group_toggle.as_ref()?;
                     super::contains(*rect, point).then(|| (hit.endpoint_id.clone(), key.clone()))

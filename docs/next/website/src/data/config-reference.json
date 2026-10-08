@@ -1079,6 +1079,12 @@
           "description": "Blank terminal rows between worktree groups and unrelated top-level Spaces. Worktree parents and their indented children remain packed."
         },
         {
+          "key": "ui.sidebar.projects",
+          "description": "Render one Projects tree instead of the split Spaces and Agents panels: each repository, its worktree Spaces, and the agents running in each Space nested beneath it. Agents are reached by clicking; the per-Space agent list folds behind an \"N agents\" row. ui.sidebar.spaces.rows and ui.sidebar.agents.rows still describe their own rows, and the section divider and its split ratio do not apply.",
+          "type": "boolean",
+          "default": "false"
+        },
+        {
           "key": "ui.sidebar.spaces.rows",
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"workspace\"], [\"branch\", \"git_status\"]]",

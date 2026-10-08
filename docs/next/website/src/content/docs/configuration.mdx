@@ -434,6 +434,30 @@ The first matching rule wins. Its specified style fields override the occurrence
 
 Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules, because neither renders a value a rule could match. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
 
+### One Projects tree
+
+The expanded sidebar normally splits into a Spaces panel and an Agents panel. Every agent already belongs to a Space, so `ui.sidebar.projects` folds them into a single tree instead — each repository, its worktree Spaces, and the agents running in each Space nested beneath it:
+
+```toml
+[ui.sidebar]
+projects = true
+```
+
+```
+ projects
+ junior
+   develop
+   eli/org-settings-audit-log
+   nsou-jr/mic-unplug-recovery
+     2 agents                  ▾
+       ◐ claude  building
+       ○ claude  review
+ cs-ops
+   main
+```
+
+A Space's agents fold behind an `N agents` row; click it to collapse or expand, and click an agent to focus its pane. The fold state is remembered per Space. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
+
 ### Substituting the state icon
 
 `state_icon` draws a glyph chosen from agent state, so every space in the same state shows the same mark. Give it an `override_token` naming a `$name` metadata token and a space that reports a non-empty value for it renders that value in the icon's place instead:

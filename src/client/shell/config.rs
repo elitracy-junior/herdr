@@ -32,6 +32,12 @@ impl ClientShellState {
         };
         let mut collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
         collapsed_groups.sort();
+        let mut collapsed_agent_lists = self
+            .collapsed_agent_lists
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        collapsed_agent_lists.sort();
         let mut remote_collapsed_groups = self
             .remote_collapsed_groups
             .iter()
@@ -60,6 +66,7 @@ impl ClientShellState {
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
+            collapsed_agent_lists,
             remote_collapsed_groups,
         };
         if let Err(error) = preferences::store(path, preferences) {
@@ -123,6 +130,7 @@ impl ClientShellConfig {
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
+            projects_sidebar: config.ui.sidebar.projects,
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
@@ -325,6 +333,7 @@ impl ClientShellConfig {
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
+                self.projects_sidebar = ui.sidebar.projects;
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;

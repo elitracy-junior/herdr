@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `ui.sidebar.projects = true` renders one Projects tree in place of the split Spaces and Agents panels: each repository, its worktree Spaces, and the agents running in each Space nested beneath it. Every agent already belongs to a Space, so the split listed related things twice and spent half the sidebar doing it. A Space's agents fold behind an `N agents` row, and the fold state persists.
 - `state_icon` accepts an `override_token` naming a `$name` metadata token, rendered in its place whenever a space or pane reports a non-empty value for it. The glyph is otherwise chosen from agent state alone, so a layout had no way to mark one space apart from another; a reporter can now give a space its own icon without giving up the slot. The substitute is drawn in the state's colour and, being text-valued, accepts `rules`.
 
 ## [0.9.3] - 2026-09-29

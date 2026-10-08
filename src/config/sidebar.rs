@@ -581,6 +581,10 @@ impl Default for SpacesSidebarConfig {
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    /// Render one Projects tree instead of the split Spaces/Agents panels:
+    /// repo, then its worktrees, then each worktree's agents nested beneath it.
+    /// The Spaces and Agents row layouts still describe their own rows.
+    pub projects: bool,
 }
 
 #[cfg(test)]
