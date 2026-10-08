@@ -48,26 +48,28 @@ pub(crate) const AGENT_ANIMATION_INTERVAL: std::time::Duration =
 
 /// Glyph and colour for an agent in the tree: the agent mark normally, a
 /// spinner while it works, a check when it finishes.
+///
+/// Only the states worth reacting to carry colour. An agent that is merely
+/// present or busy stays grey -- the spinner's motion already says it is busy,
+/// and a column of coloured marks reads as alarm when nothing is wrong.
 pub(super) fn agent_icon(
     status: crate::api::schema::AgentStatus,
     frame: usize,
     palette: &Palette,
 ) -> (&'static str, Style) {
     use crate::api::schema::AgentStatus;
+    let quiet = Style::default().fg(palette.overlay0);
     match status {
-        AgentStatus::Working => (
-            SPINNER[frame % SPINNER.len()],
-            Style::default().fg(palette.yellow),
-        ),
+        AgentStatus::Working => (SPINNER[frame % SPINNER.len()], quiet),
         AgentStatus::Done => (
             "✓",
             Style::default()
                 .fg(palette.green)
                 .add_modifier(Modifier::BOLD),
         ),
+        // Blocked keeps its colour: it is the one state asking for attention.
         AgentStatus::Blocked => ("×", Style::default().fg(palette.red)),
-        AgentStatus::Idle => (AGENT_GLYPH, Style::default().fg(palette.green)),
-        AgentStatus::Unknown => (AGENT_GLYPH, Style::default().fg(palette.overlay0)),
+        AgentStatus::Idle | AgentStatus::Unknown => (AGENT_GLYPH, quiet),
     }
 }
 
@@ -98,6 +100,18 @@ impl ProjectRow {
     /// nested rows stay packed against the row they belong to.
     pub(super) fn starts_group(&self) -> bool {
         matches!(self, Self::Workspace(entry) if !entry.indented)
+    }
+
+    /// Blank rows before this entry in the Projects tree. Separation is what
+    /// shows the grouping here, in place of the tree connectors the Spaces
+    /// panel draws, so a Space is parted from the one above it and a project
+    /// from the project above it. An agent stays packed against its Space.
+    pub(super) fn gap_before(&self) -> u16 {
+        match self {
+            Self::Workspace(entry) if !entry.indented => 2,
+            Self::Workspace(_) => 1,
+            _ => 0,
+        }
     }
 }
 
@@ -332,6 +346,19 @@ mod tests {
             SPINNER[0]
         );
         assert_eq!(agent_icon(AgentStatus::Done, 0, &palette).0, "\u{2713}");
+        // Only finishing and blocking earn colour; the rest stay quiet.
+        assert_eq!(
+            agent_icon(AgentStatus::Idle, 0, &palette).1.fg,
+            Some(palette.overlay0)
+        );
+        assert_eq!(
+            agent_icon(AgentStatus::Working, 0, &palette).1.fg,
+            Some(palette.overlay0)
+        );
+        assert_eq!(
+            agent_icon(AgentStatus::Done, 0, &palette).1.fg,
+            Some(palette.green)
+        );
         assert_eq!(
             agent_icon(AgentStatus::Idle, 0, &palette).0,
             AGENT_GLYPH,

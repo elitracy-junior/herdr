@@ -458,7 +458,9 @@ projects = true
 
 Each Space lists the agents running in it. A Space with several gets an `N agents` fold -- click it to collapse or expand, and the state is remembered per Space; a Space with one shows it directly, since a fold would be taller than the row it hides. Click an agent to focus its pane.
 
-Nested agents use `ui.sidebar.agents.nested_rows`, which defaults to one compact line (`state_icon`, `agent`, `terminal_title_stripped`). It deliberately omits the `workspace` token that `ui.sidebar.agents.rows` starts with, because the Space is already the line above. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
+Nested agents use `ui.sidebar.agents.nested_rows`, which defaults to one compact line: the agent mark and the agent's name. It deliberately omits the `workspace` token that `ui.sidebar.agents.rows` starts with, because the Space is already the line above, and stays short because the tree indents it twice. Add `terminal_title_stripped` or a `$name` token if you want more on the line.
+
+The mark itself reflects agent state: an agent glyph when present, a spinner while working, a green check when done, a red cross when blocked. Only the last two carry colour -- the spinner's motion already says the agent is busy. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
 
 ### Substituting the state icon
 

@@ -263,7 +263,11 @@ pub(crate) fn render_sidebar(
         .enumerate()
         .map(|(index, _)| {
             entries.get(index + 1).map_or(0, |next| {
-                u16::from(next.starts_group()) * config.spaces.row_gap
+                if projects {
+                    next.gap_before()
+                } else {
+                    u16::from(next.starts_group()) * config.spaces.row_gap
+                }
             })
         })
         .collect::<Vec<_>>();
@@ -336,10 +340,13 @@ pub(crate) fn render_sidebar(
                     config.status_indicators,
                     entry,
                     rows,
-                    workspace.focused,
-                    selected,
-                    state.selected_workspace_id.is_some(),
-                    dragged,
+                    WorkspaceRowStyle {
+                        focused: workspace.focused,
+                        selected,
+                        navigating: state.selected_workspace_id.is_some(),
+                        dragged,
+                        tree_connectors: !projects,
+                    },
                     palette,
                 );
                 let group_toggle = render_parent_group_toggle(
@@ -378,7 +385,11 @@ pub(crate) fn render_sidebar(
             }
         }
         let gap = entries.get(entry_position + 1).map_or(0, |next| {
-            u16::from(next.starts_group()) * config.spaces.row_gap
+            if projects {
+                next.gap_before()
+            } else {
+                u16::from(next.starts_group()) * config.spaces.row_gap
+            }
         });
         y = y.saturating_add(row_height + gap);
     }
@@ -682,6 +693,17 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
+/// How a Space row is presented: its selection state, and whether the sidebar
+/// draws tree connectors or lets indentation and spacing carry the grouping.
+#[derive(Clone, Copy)]
+pub(in crate::client::shell) struct WorkspaceRowStyle {
+    pub(in crate::client::shell) focused: bool,
+    pub(in crate::client::shell) selected: bool,
+    pub(in crate::client::shell) navigating: bool,
+    pub(in crate::client::shell) dragged: bool,
+    pub(in crate::client::shell) tree_connectors: bool,
+}
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -689,12 +711,16 @@ pub(in crate::client::shell) fn render_workspace_rows(
     indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
-    focused: bool,
-    selected: bool,
-    navigating: bool,
-    dragged: bool,
+    style: WorkspaceRowStyle,
     palette: &Palette,
 ) {
+    let WorkspaceRowStyle {
+        focused,
+        selected,
+        navigating,
+        dragged,
+        tree_connectors,
+    } = style;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -702,7 +728,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
         let mut x = area.x;
         if entry.indented {
-            let prefix = if row_index == 0 {
+            let prefix = if !tree_connectors {
+                "    "
+            } else if row_index == 0 {
                 if entry.last_child {
                     "   └─ "
                 } else {

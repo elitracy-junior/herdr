@@ -558,11 +558,7 @@ impl Default for AgentsSidebarConfig {
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
-            nested_rows: vec![vec![
-                AgentSidebarToken::StateIcon,
-                AgentSidebarToken::Agent,
-                AgentSidebarToken::TerminalTitleStripped,
-            ]],
+            nested_rows: vec![vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Agent]],
         }
     }
 }

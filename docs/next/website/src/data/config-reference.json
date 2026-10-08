@@ -1069,8 +1069,8 @@
         {
           "key": "ui.sidebar.agents.nested_rows",
           "type": "list of token rows",
-          "default": "[[\"state_icon\", \"agent\", \"terminal_title_stripped\"]]",
-          "description": "Rows for an agent nested in the Projects tree (ui.sidebar.projects). The Space an agent belongs to is already the line above it, so this omits the workspace token that ui.sidebar.agents.rows starts with and defaults to one compact line: state_icon, agent, terminal_title_stripped. Accepts the same tokens, styles and rules as ui.sidebar.agents.rows. Unused when the Projects tree is off."
+          "default": "[[\"state_icon\", \"agent\"]]",
+          "description": "Rows for an agent nested in the Projects tree (ui.sidebar.projects). The Space an agent belongs to is already the line above it, so this omits the workspace token that ui.sidebar.agents.rows starts with, and defaults to one short line of the agent mark and the agent name because the tree indents it twice. Accepts the same tokens, styles and rules as ui.sidebar.agents.rows. Unused when the Projects tree is off."
         },
         {
           "key": "ui.sidebar.agents.rows_by_agent",
