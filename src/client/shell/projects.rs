@@ -108,6 +108,35 @@ impl ProjectRow {
     }
 }
 
+/// A repo parent with no worktrees under it heads nothing: it is the repo
+/// still being tracked so a worktree can be made from it later, not somewhere
+/// work is happening. Keep it out of the tree unless it is focused or running
+/// an agent, which would otherwise strand a live pane with no way back to it.
+fn is_empty_repo_parent(snapshot: &ClientShellSnapshot, entry: &WorkspaceEntry) -> bool {
+    let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+        return false;
+    };
+    let Some(worktree) = workspace.worktree.as_ref() else {
+        return false;
+    };
+    if worktree.is_linked_worktree || workspace.focused {
+        return false;
+    }
+    if snapshot
+        .agents
+        .iter()
+        .any(|agent| agent.workspace_id == workspace.workspace_id)
+    {
+        return false;
+    }
+    !snapshot.workspaces.iter().any(|candidate| {
+        candidate
+            .worktree
+            .as_ref()
+            .is_some_and(|other| other.key == worktree.key && other.is_linked_worktree)
+    })
+}
+
 /// Blank rows between two entries in the Projects tree. Separation is what
 /// shows the grouping here, in place of the tree connectors the Spaces panel
 /// draws, so it has to say what belongs together as well as what does not: a
@@ -147,6 +176,10 @@ pub(super) fn project_rows(
     if !include_agents {
         return entries.into_iter().map(ProjectRow::Workspace).collect();
     }
+    let entries = entries
+        .into_iter()
+        .filter(|entry| !is_empty_repo_parent(snapshot, entry))
+        .collect::<Vec<_>>();
     // Built once: this is a render path scaled by workspaces x agents.
     let nested = nested_agents(config);
     let mut rows = Vec::with_capacity(entries.len());
@@ -421,6 +454,31 @@ mod tests {
             0,
             "an agent hugs the space it runs in"
         );
+    }
+
+    #[test]
+    fn a_repo_with_no_worktrees_left_drops_out_of_the_tree() {
+        use crate::protocol::ClientShellWorktree;
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = Vec::new();
+        snapshot.workspaces[0].focused = false;
+        snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
+            key: "/repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: false,
+        });
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        assert!(kinds(&rows).is_empty(), "a repo heading nothing is hidden");
+
+        // Still tracked, so a live pane in it is never stranded.
+        snapshot.agents = vec![agent("pane_1", "ws_1")];
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        assert_eq!(kinds(&rows), ["workspace", "agent"]);
+
+        snapshot.agents = Vec::new();
+        snapshot.workspaces[0].focused = true;
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        assert_eq!(kinds(&rows), ["workspace"]);
     }
 
     #[test]
