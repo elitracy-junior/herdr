@@ -462,6 +462,17 @@ Nested agents use `ui.sidebar.agents.nested_rows`, which defaults to one compact
 
 The mark itself reflects agent state: an agent glyph when present, a spinner while working, a green check when done, a red cross when blocked. Only the last two carry colour -- the spinner's motion already says the agent is busy. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
 
+### Colouring a token by another token
+
+`rules` normally test the value a token renders. A mark that means the same thing however it is coloured renders one string, so no rule can tell its states apart. `style_token` points the rules at a different metadata token instead:
+
+```toml
+[ui.sidebar.spaces]
+rows = [[{ token = "state_icon", override_token = "$review", style_token = "$pr_state", rules = [{ equals = "ready", fg = "#a6e3a1" }, { equals = "blocked", fg = "#f38ba8" }] }, "workspace"]]
+```
+
+Here `$review` supplies the glyph and `$pr_state` picks its colour. A style token the space does not report tests as empty. Note that TOML inline tables cannot span lines, so a rule list like this stays on one line.
+
 ### Substituting the state icon
 
 `state_icon` draws a glyph chosen from agent state, so every space in the same state shows the same mark. Give it an `override_token` naming a `$name` metadata token and a space that reports a non-empty value for it renders that value in the icon's place instead:

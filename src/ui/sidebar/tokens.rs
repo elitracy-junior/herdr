@@ -79,17 +79,43 @@ fn state_icon_kind<T: StateIconOverridable>(
 
 trait StateIconOverridable {
     fn override_token(&self) -> Option<&str>;
+    fn style_token(&self) -> Option<&str>;
+}
+
+/// The style for one occurrence. Rules normally test what the token renders;
+/// with a `style_token` they test that token's reported value instead, so a
+/// mark that renders the same string in every state can still be coloured by
+/// the state it stands for. An unreported style token tests as empty.
+fn style_for<T: StateIconOverridable>(
+    configured: &T,
+    styled: impl Fn(&str) -> Option<SidebarTokenStyle>,
+    fixed: SidebarTokenStyle,
+    kind: &ResolvedTokenKind,
+    tokens: &std::collections::HashMap<String, String>,
+) -> Option<SidebarTokenStyle> {
+    match configured.style_token() {
+        Some(name) => styled(tokens.get(name).map_or("", String::as_str)),
+        None => kind.text_value().map_or(Some(fixed), styled),
+    }
 }
 
 impl StateIconOverridable for AgentSidebarToken {
     fn override_token(&self) -> Option<&str> {
         Self::override_token(self)
     }
+
+    fn style_token(&self) -> Option<&str> {
+        Self::style_token(self)
+    }
 }
 
 impl StateIconOverridable for SpaceSidebarToken {
     fn override_token(&self) -> Option<&str> {
         Self::override_token(self)
+    }
+
+    fn style_token(&self) -> Option<&str> {
+        Self::style_token(self)
     }
 }
 
@@ -153,9 +179,13 @@ pub(crate) fn agent_rows(
                             .map(ResolvedTokenKind::Custom),
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
-                    let style = kind
-                        .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                    let style = style_for(
+                        configured,
+                        |value| configured.style_for_value(value),
+                        style,
+                        &kind,
+                        context.tokens,
+                    )?;
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
@@ -211,9 +241,13 @@ pub(crate) fn space_rows(
                             .map(ResolvedTokenKind::Custom),
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
-                    let style = kind
-                        .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                    let style = style_for(
+                        configured,
+                        |value| configured.style_for_value(value),
+                        style,
+                        &kind,
+                        context.tokens,
+                    )?;
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();

@@ -123,6 +123,9 @@ pub enum AgentSidebarToken {
         /// Metadata token consulted in place of a non-text built-in. Only
         /// `state_icon` accepts one; see `RawStyledSidebarToken::override_token`.
         override_token: Option<String>,
+        /// Metadata token whose value this occurrence's rules match against,
+        /// instead of the value it renders.
+        style_token: Option<String>,
     },
 }
 
@@ -141,6 +144,9 @@ pub enum SpaceSidebarToken {
         /// Metadata token consulted in place of a non-text built-in. Only
         /// `state_icon` accepts one; see `RawStyledSidebarToken::override_token`.
         override_token: Option<String>,
+        /// Metadata token whose value this occurrence's rules match against,
+        /// instead of the value it renders.
+        style_token: Option<String>,
     },
 }
 
@@ -150,6 +156,15 @@ impl AgentSidebarToken {
     pub(crate) fn override_token(&self) -> Option<&str> {
         match self {
             Self::Styled { override_token, .. } => override_token.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The metadata token this occurrence's rules match against, if its colour
+    /// is meant to follow something other than what it renders.
+    pub(crate) fn style_token(&self) -> Option<&str> {
+        match self {
+            Self::Styled { style_token, .. } => style_token.as_deref(),
             _ => None,
         }
     }
@@ -175,6 +190,15 @@ impl SpaceSidebarToken {
     pub(crate) fn override_token(&self) -> Option<&str> {
         match self {
             Self::Styled { override_token, .. } => override_token.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The metadata token this occurrence's rules match against, if its colour
+    /// is meant to follow something other than what it renders.
+    pub(crate) fn style_token(&self) -> Option<&str> {
+        match self {
+            Self::Styled { style_token, .. } => style_token.as_deref(),
             _ => None,
         }
     }
@@ -213,6 +237,13 @@ struct RawStyledSidebarToken {
     /// which is also what lets rules apply to it.
     #[serde(default)]
     override_token: Option<String>,
+    /// `$name` metadata token whose value this occurrence's `rules` match
+    /// against, instead of the value it renders. A mark that means the same
+    /// thing however it is coloured -- a pull request, say -- renders one
+    /// string, so rules on that string cannot tell its states apart; this lets
+    /// the colour follow a token that does.
+    #[serde(default)]
+    style_token: Option<String>,
 }
 
 /// One configured token occurrence, after validation and before it is matched
@@ -222,6 +253,7 @@ struct SidebarTokenParts {
     style: Option<SidebarTokenStyle>,
     rules: Vec<SidebarTokenRule>,
     override_token: Option<String>,
+    style_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -239,11 +271,16 @@ impl RawSidebarToken {
                 style: None,
                 rules: Vec::new(),
                 override_token: None,
+                style_token: None,
             }),
             Self::Styled(token) => {
                 if token.rules.len() > 16 {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
+                let style_token = match token.style_token {
+                    None => None,
+                    Some(name) => Some(parse_override_token(&name)?),
+                };
                 let override_token = match token.override_token {
                     None => None,
                     Some(name) => {
@@ -259,8 +296,12 @@ impl RawSidebarToken {
                 };
                 // A substituted state_icon resolves to the metadata value, so it
                 // is text-valued and rules work on it like any other token.
+                // A substituted state_icon resolves to metadata, and a
+                // style_token makes the rules match metadata outright; either
+                // way there is a text value for them to test.
                 if !token.rules.is_empty()
                     && override_token.is_none()
+                    && style_token.is_none()
                     && matches!(token.token.as_str(), "state_icon" | "git_status")
                 {
                     return Err("sidebar rules require a text-valued token".into());
@@ -274,6 +315,7 @@ impl RawSidebarToken {
                     }),
                     rules: token.rules,
                     override_token,
+                    style_token,
                 })
             }
         }
@@ -327,6 +369,7 @@ fn serialize_styled_token<S>(
     style: SidebarTokenStyle,
     rules: &[SidebarTokenRule],
     override_token: Option<&str>,
+    style_token: Option<&str>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -349,6 +392,9 @@ where
     }
     if let Some(name) = override_token {
         map.serialize_entry("override_token", &format!("${name}"))?;
+    }
+    if let Some(name) = style_token {
+        map.serialize_entry("style_token", &format!("${name}"))?;
     }
     map.end()
 }
@@ -392,11 +438,13 @@ impl Serialize for AgentSidebarToken {
                 style,
                 rules,
                 override_token,
+                style_token,
             } => serialize_styled_token(
                 agent_token_name(token),
                 *style,
                 rules,
                 override_token.as_deref(),
+                style_token.as_deref(),
                 serializer,
             ),
             token => serializer.serialize_str(&agent_token_name(token)),
@@ -438,6 +486,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
             style,
             rules: parts.rules,
             override_token: parts.override_token,
+            style_token: parts.style_token,
         }))
     }
 }
@@ -453,11 +502,13 @@ impl Serialize for SpaceSidebarToken {
                 style,
                 rules,
                 override_token,
+                style_token,
             } => serialize_styled_token(
                 space_token_name(token),
                 *style,
                 rules,
                 override_token.as_deref(),
+                style_token.as_deref(),
                 serializer,
             ),
             token => serializer.serialize_str(&space_token_name(token)),
@@ -495,6 +546,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
             style,
             rules: parts.rules,
             override_token: parts.override_token,
+            style_token: parts.style_token,
         }))
     }
 }
