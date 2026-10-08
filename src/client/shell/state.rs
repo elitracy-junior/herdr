@@ -851,6 +851,11 @@ pub(crate) struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Frame for the working-agent spinner in the Projects tree. Only advances
+    /// while an agent is actually working, so an idle session never repaints
+    /// for it -- sidebar render is a per-client, per-workspace path.
+    pub(super) agent_animation_frame: usize,
+    pub(super) agent_animation_deadline: Option<std::time::Instant>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
@@ -1019,6 +1024,8 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
+            agent_animation_frame: 0,
+            agent_animation_deadline: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -1793,6 +1800,30 @@ impl ClientShellState {
         self.reconcile_input_source();
     }
 
+    /// Advance the working-agent spinner. Returns whether the frame changed and
+    /// the sidebar therefore needs redrawing.
+    pub(crate) fn tick_agent_animation(&mut self, now: std::time::Instant) -> bool {
+        let working = self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+        });
+        if !working {
+            self.agent_animation_deadline = None;
+            return false;
+        }
+        match self.agent_animation_deadline {
+            Some(deadline) if now < deadline => false,
+            _ => {
+                self.agent_animation_frame = self.agent_animation_frame.wrapping_add(1);
+                self.agent_animation_deadline =
+                    Some(now + super::projects::AGENT_ANIMATION_INTERVAL);
+                true
+            }
+        }
+    }
+
     pub(crate) fn tick_popup_pending(&mut self, now: std::time::Instant) {
         if self
             .popup_pending_deadline
@@ -1867,6 +1898,7 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.agent_animation_deadline)
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

@@ -367,15 +367,14 @@ pub(crate) fn render_sidebar(
                 hits.agent_folds.push((rect, workspace_id.clone()));
             }
             super::projects::ProjectRow::Agent(row) => {
-                let indent = super::projects::AGENT_INDENT.min(rect.width);
-                let agent_rect = Rect::new(
-                    rect.x.saturating_add(indent),
-                    rect.y,
-                    rect.width.saturating_sub(indent),
-                    rect.height,
+                super::projects::render_nested_agent(
+                    buffer,
+                    rect,
+                    row,
+                    state.agent_animation_frame,
+                    config,
                 );
-                super::agent_sidebar::render_agent_row(buffer, agent_rect, row, config);
-                hits.agents.push((agent_rect, row.pane_id.clone()));
+                hits.agents.push((rect, row.pane_id.clone()));
             }
         }
         let gap = entries.get(entry_position + 1).map_or(0, |next| {

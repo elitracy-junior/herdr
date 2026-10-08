@@ -13,6 +13,7 @@
 use super::agent_sidebar::{agent_row_with, AgentRow};
 use super::render::{put_right_text, put_text};
 use super::*;
+use ratatui::widgets::{Paragraph, Widget};
 
 /// One entry in the tree. Each renders as one or more terminal rows.
 pub(super) enum ProjectRow {
@@ -29,8 +30,46 @@ pub(super) enum ProjectRow {
 }
 
 /// Columns an agent row and its fold sit in, relative to the Space row that
-/// owns them. Deeper than the Space's own indent so the nesting reads one way.
-pub(super) const AGENT_INDENT: u16 = 4;
+/// owns them. A child Space draws a six-column "   |- " prefix, so anything
+/// shallower than that reads as a sibling of the Space rather than its child.
+pub(super) const AGENT_INDENT: u16 = 8;
+
+/// Spinner frames for a working agent. Braille, because the half-circle glyphs
+/// herdr uses elsewhere are missing from common terminal fonts and fall back to
+/// a different face -- which visibly changes size as a row is highlighted.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The agent mark itself, for an agent that is present but not working.
+const AGENT_GLYPH: &str = "\u{f06a9}";
+
+/// How often the spinner advances.
+pub(crate) const AGENT_ANIMATION_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(120);
+
+/// Glyph and colour for an agent in the tree: the agent mark normally, a
+/// spinner while it works, a check when it finishes.
+pub(super) fn agent_icon(
+    status: crate::api::schema::AgentStatus,
+    frame: usize,
+    palette: &Palette,
+) -> (&'static str, Style) {
+    use crate::api::schema::AgentStatus;
+    match status {
+        AgentStatus::Working => (
+            SPINNER[frame % SPINNER.len()],
+            Style::default().fg(palette.yellow),
+        ),
+        AgentStatus::Done => (
+            "✓",
+            Style::default()
+                .fg(palette.green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        AgentStatus::Blocked => ("×", Style::default().fg(palette.red)),
+        AgentStatus::Idle => (AGENT_GLYPH, Style::default().fg(palette.green)),
+        AgentStatus::Unknown => (AGENT_GLYPH, Style::default().fg(palette.overlay0)),
+    }
+}
 
 impl ProjectRow {
     /// Terminal rows this entry occupies.
@@ -134,6 +173,49 @@ pub(super) fn project_rows(
     rows
 }
 
+/// Draw one agent nested under its Space.
+pub(super) fn render_nested_agent(
+    buffer: &mut Buffer,
+    rect: Rect,
+    row: &AgentRow,
+    frame: usize,
+    config: &ClientShellConfig,
+) {
+    let palette = &config.palette;
+    if row.focused {
+        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+    }
+    let icon = agent_icon(row.status, frame, palette);
+    let name_style = Style::default().fg(if row.focused {
+        palette.text
+    } else {
+        palette.subtext0
+    });
+    let secondary = Style::default().fg(palette.overlay0);
+    for (index, tokens) in row.rows.iter().take(rect.height as usize).enumerate() {
+        let x = rect.x.saturating_add(AGENT_INDENT);
+        let width = rect.width.saturating_sub(AGENT_INDENT);
+        if width == 0 {
+            break;
+        }
+        let spans = crate::ui::resolved_token_spans(
+            tokens,
+            icon,
+            secondary,
+            name_style,
+            secondary,
+            secondary,
+            palette,
+            width as usize,
+        );
+        let line = ratatui::text::Line::from(spans);
+        Paragraph::new(line).render(
+            Rect::new(x, rect.y.saturating_add(index as u16), width, 1),
+            buffer,
+        );
+    }
+}
+
 /// Draw the "N agents" fold.
 pub(super) fn render_agent_fold(
     buffer: &mut Buffer,
@@ -227,6 +309,42 @@ mod tests {
             }
         }
         assert_eq!(row.rows.len(), 1, "nested agents render on one line");
+    }
+
+    #[test]
+    fn the_agent_icon_spins_while_working_and_checks_when_done() {
+        use crate::api::schema::AgentStatus;
+        let palette = Palette::catppuccin();
+        let working: Vec<&str> = (0..SPINNER.len())
+            .map(|frame| agent_icon(AgentStatus::Working, frame, &palette).0)
+            .collect();
+        assert_eq!(
+            working
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            SPINNER.len(),
+            "every frame should differ, or it does not read as motion"
+        );
+        // The frame counter wraps rather than panicking on a long-running agent.
+        assert_eq!(
+            agent_icon(AgentStatus::Working, SPINNER.len(), &palette).0,
+            SPINNER[0]
+        );
+        assert_eq!(agent_icon(AgentStatus::Done, 0, &palette).0, "\u{2713}");
+        assert_eq!(
+            agent_icon(AgentStatus::Idle, 0, &palette).0,
+            AGENT_GLYPH,
+            "an idle agent still shows it is an agent"
+        );
+        // A still agent must not change with the frame, or the sidebar would
+        // repaint forever.
+        for frame in 0..4 {
+            assert_eq!(
+                agent_icon(AgentStatus::Idle, frame, &palette).0,
+                agent_icon(AgentStatus::Idle, 0, &palette).0
+            );
+        }
     }
 
     #[test]
