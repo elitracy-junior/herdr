@@ -456,7 +456,9 @@ projects = true
    main
 ```
 
-A Space's agents fold behind an `N agents` row; click it to collapse or expand, and click an agent to focus its pane. The fold state is remembered per Space. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
+Agents are listed only for a Space running more than one. A Space's state icon is already derived from its agents, so a Space with a single agent would state the same thing twice. Where there are several, they fold behind an `N agents` row; click it to collapse or expand, and click an agent to focus its pane. The fold state is remembered per Space.
+
+Nested agents use `ui.sidebar.agents.nested_rows`, which defaults to one compact line (`state_icon`, `agent`, `terminal_title_stripped`). It deliberately omits the `workspace` token that `ui.sidebar.agents.rows` starts with, because the Space is already the line above. `ui.sidebar.spaces.rows` still describes the Space rows and `ui.sidebar.agents.rows` the agent rows, so both stay configurable. With the tree on there is no second panel, so the section divider and `sidebar_section_split` do not apply.
 
 ### Substituting the state icon
 

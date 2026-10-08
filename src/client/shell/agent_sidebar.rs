@@ -251,6 +251,17 @@ pub(super) fn agent_row(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Option<AgentRow> {
+    agent_row_with(snapshot, pane_id, machine, &config.agents)
+}
+
+/// `agent_row` with an explicit row layout, for callers rendering agents
+/// somewhere other than the Agents panel.
+pub(super) fn agent_row_with(
+    snapshot: &ClientShellSnapshot,
+    pane_id: &str,
+    machine: Option<&str>,
+    agents: &crate::config::AgentsSidebarConfig,
+) -> Option<AgentRow> {
     let agent = snapshot
         .agents
         .iter()
@@ -293,7 +304,7 @@ pub(super) fn agent_row(
         .as_deref()
         .and_then(crate::detect::parse_agent_label);
     let rows = crate::ui::sidebar_agent_rows(
-        &config.agents,
+        agents,
         crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,

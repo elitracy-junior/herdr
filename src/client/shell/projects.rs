@@ -10,7 +10,7 @@
 //! Presentation only: no new runtime or API state, per the runtime/client
 //! boundary guardrail in AGENTS.md.
 
-use super::agent_sidebar::{agent_row, AgentRow};
+use super::agent_sidebar::{agent_row_with, AgentRow};
 use super::render::{put_right_text, put_text};
 use super::*;
 
@@ -28,8 +28,9 @@ pub(super) enum ProjectRow {
     Agent(Box<AgentRow>),
 }
 
-/// Columns an agent row and its fold sit in, relative to the workspace row.
-pub(super) const AGENT_INDENT: u16 = 2;
+/// Columns an agent row and its fold sit in, relative to the Space row that
+/// owns them. Deeper than the Space's own indent so the nesting reads one way.
+pub(super) const AGENT_INDENT: u16 = 4;
 
 impl ProjectRow {
     /// Terminal rows this entry occupies.
@@ -61,6 +62,17 @@ impl ProjectRow {
     }
 }
 
+/// The row layout for an agent inside the tree. Its Space is already the line
+/// above it, so this is the compact layout rather than the panel's.
+fn nested_agents(config: &ClientShellConfig) -> crate::config::AgentsSidebarConfig {
+    crate::config::AgentsSidebarConfig {
+        rows: config.agents.nested_rows.clone(),
+        rows_by_agent: Default::default(),
+        row_gap: 0,
+        nested_rows: config.agents.nested_rows.clone(),
+    }
+}
+
 /// Expand the space entries into the full tree. With `include_agents` false
 /// this is exactly the Spaces list, so both sidebar modes share one code path.
 pub(super) fn project_rows(
@@ -74,6 +86,8 @@ pub(super) fn project_rows(
     if !include_agents {
         return entries.into_iter().map(ProjectRow::Workspace).collect();
     }
+    // Built once: this is a render path scaled by workspaces x agents.
+    let nested = nested_agents(config);
     let mut rows = Vec::with_capacity(entries.len());
     for entry in entries {
         let workspace_id = snapshot
@@ -95,7 +109,11 @@ pub(super) fn project_rows(
                     })
                 })
                 .collect::<Vec<_>>();
-        if pane_ids.is_empty() {
+        // A Space's own state icon is derived from its agents, so a Space with
+        // a single agent would say the same thing twice -- which is most Spaces.
+        // List agents only where there are several and the Space icon can no
+        // longer speak for all of them.
+        if pane_ids.len() < 2 {
             continue;
         }
         let collapsed = collapsed_agent_lists.contains(&workspace_id);
@@ -108,7 +126,7 @@ pub(super) fn project_rows(
             continue;
         }
         for pane_id in pane_ids {
-            if let Some(row) = agent_row(snapshot, &pane_id, config, None) {
+            if let Some(row) = agent_row_with(snapshot, &pane_id, None, &nested) {
                 rows.push(ProjectRow::Agent(Box::new(row)));
             }
         }
@@ -186,6 +204,32 @@ mod tests {
     }
 
     #[test]
+    fn nested_agent_rows_do_not_repeat_their_workspace() {
+        use crate::ui::ResolvedTokenKind;
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = vec![agent("pane_1", "ws_1"), agent("pane_2", "ws_1")];
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let ProjectRow::Agent(row) = rows
+            .iter()
+            .find(|r| matches!(r, ProjectRow::Agent(_)))
+            .unwrap()
+        else {
+            panic!("expected an agent row");
+        };
+        // The Space is the line directly above, so repeating it is duplication.
+        for line in &row.rows {
+            for token in line {
+                assert!(
+                    !matches!(token.kind, ResolvedTokenKind::Workspace(_)),
+                    "nested agent row repeats the workspace: {:?}",
+                    token.kind
+                );
+            }
+        }
+        assert_eq!(row.rows.len(), 1, "nested agents render on one line");
+    }
+
+    #[test]
     fn without_agents_the_tree_is_exactly_the_spaces_list() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1")];
@@ -236,6 +280,14 @@ mod tests {
     fn a_workspace_with_no_agents_gets_no_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_9", "ws_other")];
+        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        assert_eq!(kinds(&rows), ["workspace"]);
+    }
+
+    #[test]
+    fn a_lone_agent_is_left_to_its_space_icon() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = vec![agent("pane_1", "ws_1")];
         let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
         assert_eq!(kinds(&rows), ["workspace"]);
     }

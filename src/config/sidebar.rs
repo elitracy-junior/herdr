@@ -528,6 +528,12 @@ pub struct AgentsSidebarConfig {
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
     pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
     pub row_gap: u16,
+    /// Rows for an agent nested in the Projects tree, where the Space it
+    /// belongs to is already the line above it. The panel default repeats
+    /// `workspace` on every agent, which reads as duplication once the agent
+    /// sits underneath that Space, so this defaults to one compact line.
+    #[serde(deserialize_with = "deserialize_sidebar_rows")]
+    pub nested_rows: AgentSidebarRows,
 }
 
 impl AgentsSidebarConfig {
@@ -552,6 +558,11 @@ impl Default for AgentsSidebarConfig {
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            nested_rows: vec![vec![
+                AgentSidebarToken::StateIcon,
+                AgentSidebarToken::Agent,
+                AgentSidebarToken::TerminalTitleStripped,
+            ]],
         }
     }
 }
