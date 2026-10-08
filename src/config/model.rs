@@ -200,7 +200,20 @@ pub struct ToastConfig {
     pub delivery: ToastDelivery,
     pub delay_seconds: u64,
     pub herdr: HerdrToastConfig,
+    pub system: SystemToastConfig,
     pub clipboard: ClipboardToastConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct SystemToastConfig {
+    /// An image to attach to a system notification, as an absolute path to a
+    /// local file.
+    ///
+    /// This is a picture inside the notification, not its icon. macOS takes a
+    /// notification's icon from the bundle that posted it and offers no way to
+    /// override it, so the icon is whichever helper delivers the notification.
+    pub content_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -1249,6 +1262,7 @@ impl Default for ToastConfig {
             delivery: ToastDelivery::Off,
             delay_seconds: 1,
             herdr: HerdrToastConfig::default(),
+            system: SystemToastConfig::default(),
             clipboard: ClipboardToastConfig::default(),
         }
     }
@@ -1283,6 +1297,7 @@ impl<'de> Deserialize<'de> for ToastConfig {
             enabled: Option<bool>,
             delay_seconds: Option<u64>,
             herdr: HerdrToastConfig,
+            system: SystemToastConfig,
             clipboard: ClipboardToastConfig,
         }
 
@@ -1303,6 +1318,7 @@ impl<'de> Deserialize<'de> for ToastConfig {
             delivery,
             delay_seconds,
             herdr: raw.herdr,
+            system: raw.system,
             clipboard: raw.clipboard,
         })
     }

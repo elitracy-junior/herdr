@@ -739,8 +739,11 @@ pub fn show_desktop_notification(
     title: &str,
     body: Option<&str>,
     pane_id: Option<&str>,
+    content_image: Option<&str>,
 ) -> std::io::Result<bool> {
-    show_desktop_notification_with_command(title, body, pane_id, |program| Command::new(program))
+    show_desktop_notification_with_command(title, body, pane_id, content_image, |program| {
+        Command::new(program)
+    })
 }
 
 /// What clicking the notification should run. Raising the terminal only gets
@@ -773,9 +776,12 @@ fn show_desktop_notification_with_command(
     title: &str,
     body: Option<&str>,
     pane_id: Option<&str>,
+    content_image: Option<&str>,
     mut command: impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
-    if show_terminal_notifier_notification(title, body, pane_id, &mut command).unwrap_or(false) {
+    if show_terminal_notifier_notification(title, body, pane_id, content_image, &mut command)
+        .unwrap_or(false)
+    {
         return Ok(true);
     }
 
@@ -787,6 +793,7 @@ fn show_terminal_notifier_notification(
     title: &str,
     body: Option<&str>,
     pane_id: Option<&str>,
+    content_image: Option<&str>,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let activate_bundle_id = verified_terminal_bundle_identifier(command);
@@ -795,6 +802,9 @@ fn show_terminal_notifier_notification(
         body,
         activate_bundle_id.as_deref(),
         notification_click_command(pane_id, activate_bundle_id.as_deref()).as_deref(),
+        // A path that is not there would make terminal-notifier fail outright
+        // and the notification would be lost, so drop it instead.
+        content_image.filter(|path| std::path::Path::new(path).is_file()),
         command,
     )
 }
@@ -804,10 +814,18 @@ fn show_terminal_notifier_notification_with_options(
     body: Option<&str>,
     activate_bundle_id: Option<&str>,
     click_command: Option<&str>,
+    content_image: Option<&str>,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let mut cmd = command("terminal-notifier");
-    build_terminal_notifier_command(&mut cmd, title, body, activate_bundle_id, click_command);
+    build_terminal_notifier_command(
+        &mut cmd,
+        title,
+        body,
+        activate_bundle_id,
+        click_command,
+        content_image,
+    );
     run_notification_command(cmd)
 }
 
@@ -817,9 +835,13 @@ fn build_terminal_notifier_command(
     body: Option<&str>,
     activate_bundle_id: Option<&str>,
     click_command: Option<&str>,
+    content_image: Option<&str>,
 ) {
     cmd.arg("-title").arg(title);
     cmd.arg("-message").arg(body.unwrap_or_default());
+    if let Some(path) = content_image {
+        cmd.arg("-contentImage").arg(path);
+    }
     // -execute supersedes -activate, so it has to do the raising itself.
     match click_command {
         Some(execute) => {
@@ -1311,6 +1333,38 @@ mod tests {
     }
 
     #[test]
+    fn a_content_image_is_attached_and_a_missing_one_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("herdr-notif-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let image = dir.join("icon.png");
+        std::fs::write(&image, b"not really a png").expect("write");
+
+        let mut cmd = Command::new("terminal-notifier");
+        build_terminal_notifier_command(
+            &mut cmd,
+            "claude finished",
+            Some("on eli/scan-coverage"),
+            None,
+            None,
+            image.to_str(),
+        );
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"-contentImage".to_owned()));
+
+        // A path that is not there would make terminal-notifier fail and the
+        // notification would be lost, so it is dropped before it gets there.
+        let missing = dir.join("absent.png");
+        let kept = missing
+            .to_str()
+            .filter(|path| std::path::Path::new(path).is_file());
+        assert_eq!(kept, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn click_command_goes_to_the_pane_s_workspace_and_raises_the_terminal() {
         let click = notification_click_command(Some("w12:p3"), Some("com.github.wez.wezterm"))
             .expect("a pane id yields a click command");
@@ -1340,6 +1394,7 @@ mod tests {
             Some("workspace 1"),
             Some("com.mitchellh.ghostty"),
             Some("open -b x; herdr workspace focus w1"),
+            None,
         );
         let args = cmd
             .get_args()
@@ -1358,6 +1413,7 @@ mod tests {
             "pi finished",
             Some("workspace 1"),
             Some("com.mitchellh.ghostty"),
+            None,
             None,
         );
         let args = cmd
@@ -1398,6 +1454,7 @@ mod tests {
             Some("body"),
             Some("com.mitchellh.ghostty"),
             None,
+            None,
             &mut command,
         )
         .expect("terminal-notifier command should run");
@@ -1429,7 +1486,7 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
             cmd
         };
         let shown =
-            show_desktop_notification_with_command("title", Some("body"), None, &mut command)
+            show_desktop_notification_with_command("title", Some("body"), None, None, &mut command)
                 .expect("osascript fallback should run");
 
         assert!(shown);

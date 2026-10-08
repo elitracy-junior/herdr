@@ -146,13 +146,18 @@ fn sound_for_toast_kind(
     }
 }
 
+/// The line under "<agent> finished": where it happened. The title already
+/// says what happened, so this says where and nothing else -- a workspace
+/// number and a tab name are navigation details, and a notification is read at
+/// a glance rather than navigated.
 pub fn notification_context(
     ws: &crate::workspace::Workspace,
     workspace_label: &str,
-    ws_idx: usize,
+    _ws_idx: usize,
     pane_id: PaneId,
 ) -> String {
-    let mut context = format!("{} · {}", workspace_label, ws_idx + 1);
+    let mut context = format!("on {workspace_label}");
+    // A tab name only earns its place when there is more than one to tell apart.
     if ws.tabs.len() > 1 {
         if let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) {
             if let Some(label) = ws.tab_display_name(tab_idx) {
@@ -2140,7 +2145,8 @@ mod tests {
 
         assert_eq!(
             notification_context(&state.workspaces[0], "__herdr_projects__", 0, root),
-            "__herdr_projects__ · 1"
+            "on __herdr_projects__",
+            "the title says what happened; this says where, and nothing else"
         );
     }
 

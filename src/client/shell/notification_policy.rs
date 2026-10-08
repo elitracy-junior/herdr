@@ -233,6 +233,7 @@ impl ClientShellState {
                         title: pending.event.title,
                         body: pending.event.body,
                         pane_id: pending.event.pane_id.clone(),
+                        content_image: self.config.toast_content_image.clone(),
                     });
                 }
                 crate::config::ToastDelivery::Terminal | crate::config::ToastDelivery::System => {}

@@ -1139,6 +1139,12 @@
           ]
         },
         {
+          "key": "ui.toast.system.content_image",
+          "type": "string",
+          "default": "unset",
+          "description": "Absolute path to a local image attached to a system notification (ui.toast.delivery = \"system\"). This is a picture shown inside the notification, not its icon: macOS takes a notification's icon from the bundle that posts it and offers no way to override it, so the icon is whichever helper delivers the notification. A path that does not exist is ignored rather than risking the notification being dropped. macOS only."
+        },
+        {
           "key": "ui.toast.clipboard.enabled",
           "type": "boolean",
           "default": "true",

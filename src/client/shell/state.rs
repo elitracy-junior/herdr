@@ -31,6 +31,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
     pub(super) toast_position: crate::config::ToastHerdrPosition,
+    /// Picture attached to a system notification; not its icon.
+    pub(super) toast_content_image: Option<String>,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
@@ -726,6 +728,7 @@ pub(crate) enum ClientShellNotificationEffect {
         /// The pane the notification is about, so clicking it can go there
         /// rather than just raising the terminal.
         pane_id: Option<String>,
+        content_image: Option<String>,
     },
 }
 

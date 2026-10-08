@@ -143,7 +143,7 @@ mod tests {
 
         assert_eq!(
             message.as_deref(),
-            Some("codex finished: __herdr_projects__ · 1")
+            Some("codex finished: on __herdr_projects__")
         );
 
         for (_, runtime) in terminal_runtimes.drain() {
