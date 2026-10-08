@@ -24,10 +24,16 @@ pub(super) fn handle_shell_notification_effects(
                     warn!(err = %err, "failed to emit terminal notification");
                 }
             }
-            shell::ClientShellNotificationEffect::System { title, body } => {
-                if let Err(err) =
-                    crate::platform::show_desktop_notification(&title, body.as_deref())
-                {
+            shell::ClientShellNotificationEffect::System {
+                title,
+                body,
+                pane_id,
+            } => {
+                if let Err(err) = crate::platform::show_desktop_notification(
+                    &title,
+                    body.as_deref(),
+                    pane_id.as_deref(),
+                ) {
                     warn!(err = %err, "failed to emit system notification");
                 }
             }
@@ -47,7 +53,7 @@ pub(super) fn handle_notify(
         body,
         sound_config,
         crate::terminal_notify::show_notification,
-        crate::platform::show_desktop_notification,
+        |title, body| crate::platform::show_desktop_notification(title, body, None),
     );
 }
 

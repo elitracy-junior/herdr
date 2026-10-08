@@ -735,25 +735,58 @@ fn unique_timestamp_nanos() -> u128 {
 /// Prefer `terminal-notifier` when it is installed because it can activate the
 /// hosting terminal on click. Fall back to built-in AppleScript notifications
 /// when it is not available.
-pub fn show_desktop_notification(title: &str, body: Option<&str>) -> std::io::Result<bool> {
-    show_desktop_notification_with_command(title, body, |program| Command::new(program))
+pub fn show_desktop_notification(
+    title: &str,
+    body: Option<&str>,
+    pane_id: Option<&str>,
+) -> std::io::Result<bool> {
+    show_desktop_notification_with_command(title, body, pane_id, |program| Command::new(program))
+}
+
+/// What clicking the notification should run. Raising the terminal only gets
+/// you back to whichever space you left; the point of the notification is the
+/// space it came from, so focus that too.
+///
+/// A pane id is "<workspace>:<pane>", and focusing the workspace is what moves
+/// you there. `open -b` does the raising, because terminal-notifier runs this
+/// instead of its own activation rather than alongside it.
+fn notification_click_command(
+    pane_id: Option<&str>,
+    activate_bundle_id: Option<&str>,
+) -> Option<String> {
+    let workspace = pane_id?.split(':').next().filter(|id| !id.is_empty())?;
+    if workspace.contains(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-') {
+        return None;
+    }
+    let herdr = std::env::current_exe().ok()?;
+    let herdr = herdr.to_str()?;
+    if herdr.contains('\'') {
+        return None;
+    }
+    Some(match activate_bundle_id {
+        Some(bundle) => format!("open -b '{bundle}'; '{herdr}' workspace focus {workspace}"),
+        None => format!("'{herdr}' workspace focus {workspace}"),
+    })
 }
 
 fn show_desktop_notification_with_command(
     title: &str,
     body: Option<&str>,
+    pane_id: Option<&str>,
     mut command: impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
-    if show_terminal_notifier_notification(title, body, &mut command).unwrap_or(false) {
+    if show_terminal_notifier_notification(title, body, pane_id, &mut command).unwrap_or(false) {
         return Ok(true);
     }
 
+    // osascript notifications cannot carry a click action at all.
     show_osascript_notification(title, body, &mut command)
 }
 
 fn show_terminal_notifier_notification(
     title: &str,
     body: Option<&str>,
+    pane_id: Option<&str>,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let activate_bundle_id = verified_terminal_bundle_identifier(command);
@@ -761,6 +794,7 @@ fn show_terminal_notifier_notification(
         title,
         body,
         activate_bundle_id.as_deref(),
+        notification_click_command(pane_id, activate_bundle_id.as_deref()).as_deref(),
         command,
     )
 }
@@ -769,10 +803,11 @@ fn show_terminal_notifier_notification_with_options(
     title: &str,
     body: Option<&str>,
     activate_bundle_id: Option<&str>,
+    click_command: Option<&str>,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let mut cmd = command("terminal-notifier");
-    build_terminal_notifier_command(&mut cmd, title, body, activate_bundle_id);
+    build_terminal_notifier_command(&mut cmd, title, body, activate_bundle_id, click_command);
     run_notification_command(cmd)
 }
 
@@ -781,11 +816,20 @@ fn build_terminal_notifier_command(
     title: &str,
     body: Option<&str>,
     activate_bundle_id: Option<&str>,
+    click_command: Option<&str>,
 ) {
     cmd.arg("-title").arg(title);
     cmd.arg("-message").arg(body.unwrap_or_default());
-    if let Some(bundle_id) = activate_bundle_id {
-        cmd.arg("-activate").arg(bundle_id);
+    // -execute supersedes -activate, so it has to do the raising itself.
+    match click_command {
+        Some(execute) => {
+            cmd.arg("-execute").arg(execute);
+        }
+        None => {
+            if let Some(bundle_id) = activate_bundle_id {
+                cmd.arg("-activate").arg(bundle_id);
+            }
+        }
     }
 }
 
@@ -1267,6 +1311,46 @@ mod tests {
     }
 
     #[test]
+    fn click_command_goes_to_the_pane_s_workspace_and_raises_the_terminal() {
+        let click = notification_click_command(Some("w12:p3"), Some("com.github.wez.wezterm"))
+            .expect("a pane id yields a click command");
+        assert!(click.contains("open -b 'com.github.wez.wezterm'"));
+        assert!(click.ends_with("workspace focus w12"));
+    }
+
+    #[test]
+    fn click_command_is_absent_without_a_pane_and_refuses_odd_ids() {
+        assert_eq!(
+            notification_click_command(None, Some("com.apple.Terminal")),
+            None
+        );
+        // The id is interpolated into a shell command, so anything that is not
+        // a plain workspace id is dropped rather than quoted and hoped for.
+        for id in [":p1", "w1 2:p3", "w1;rm -rf /:p3", "$(id):p1"] {
+            assert_eq!(notification_click_command(Some(id), None), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn terminal_notifier_command_prefers_the_click_command_over_activation() {
+        let mut cmd = Command::new("terminal-notifier");
+        build_terminal_notifier_command(
+            &mut cmd,
+            "pi finished",
+            Some("workspace 1"),
+            Some("com.mitchellh.ghostty"),
+            Some("open -b x; herdr workspace focus w1"),
+        );
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"-execute".to_owned()));
+        // -execute supersedes -activate, so sending both would drop the raise.
+        assert!(!args.contains(&"-activate".to_owned()));
+    }
+
+    #[test]
     fn terminal_notifier_command_includes_icon_and_activation() {
         let mut cmd = Command::new("terminal-notifier");
         build_terminal_notifier_command(
@@ -1274,6 +1358,7 @@ mod tests {
             "pi finished",
             Some("workspace 1"),
             Some("com.mitchellh.ghostty"),
+            None,
         );
         let args = cmd
             .get_args()
@@ -1312,6 +1397,7 @@ mod tests {
             "title",
             Some("body"),
             Some("com.mitchellh.ghostty"),
+            None,
             &mut command,
         )
         .expect("terminal-notifier command should run");
@@ -1342,8 +1428,9 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
                 .env("HERDR_NOTIFY_ARGS", &path);
             cmd
         };
-        let shown = show_desktop_notification_with_command("title", Some("body"), &mut command)
-            .expect("osascript fallback should run");
+        let shown =
+            show_desktop_notification_with_command("title", Some("body"), None, &mut command)
+                .expect("osascript fallback should run");
 
         assert!(shown);
         let args = std::fs::read_to_string(&path).expect("args file");

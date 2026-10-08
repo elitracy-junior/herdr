@@ -232,6 +232,7 @@ impl ClientShellState {
                     effects.push(ClientShellNotificationEffect::System {
                         title: pending.event.title,
                         body: pending.event.body,
+                        pane_id: pending.event.pane_id.clone(),
                     });
                 }
                 crate::config::ToastDelivery::Terminal | crate::config::ToastDelivery::System => {}

@@ -723,6 +723,9 @@ pub(crate) enum ClientShellNotificationEffect {
     System {
         title: String,
         body: Option<String>,
+        /// The pane the notification is about, so clicking it can go there
+        /// rather than just raising the terminal.
+        pane_id: Option<String>,
     },
 }
 
