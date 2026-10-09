@@ -52,28 +52,65 @@ const PANE_GLYPH: &str = "\u{25aa}";
 /// The agent mark itself, for an agent that is present but not working.
 const AGENT_GLYPH: &str = "\u{f06a9}";
 
-/// What a pane is running, for display: the foreground job's own command.
-///
-/// Prefers `argv0` over the kernel's process name, which for some runtimes is
-/// a version string rather than the command -- Claude Code reports "2.1.294".
-/// Takes the group leader, since a helper sharing its job is not what the pane
-/// is running.
-pub(super) fn foreground_process_name(
-    info: &crate::api::schema::PaneProcessInfo,
-) -> Option<String> {
-    let leader = info
-        .foreground_processes
-        .iter()
-        .find(|process| Some(process.pid) == info.foreground_process_group_id)
-        .or_else(|| info.foreground_processes.first())?;
-    let name = leader
+/// Commands that stand in front of the one actually being run. The job leader
+/// is normally the command you typed, but a wrapper takes that place while the
+/// thing you care about runs underneath it.
+const PROCESS_WRAPPERS: [&str; 8] = [
+    "safe-chain",
+    "caffeinate",
+    "env",
+    "nohup",
+    "time",
+    "sudo",
+    "timeout",
+    "script",
+];
+
+/// The command a process was started as: `bun run dev` is `bun`.
+fn process_command(process: &crate::api::schema::PaneProcessInfoProcess) -> Option<String> {
+    let name = process
         .argv0
         .as_deref()
         .filter(|argv0| !argv0.is_empty())
-        .unwrap_or(leader.name.as_str());
+        .unwrap_or(process.name.as_str());
+    // argv0 can be a path, and a login shell arrives as "-zsh".
     let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let name = name.trim_start_matches('-');
+    // Some runtimes rewrite argv0 to a banner: "next-server (v15.5.24)".
+    let name = name.split_whitespace().next().unwrap_or(name);
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// What a pane is running, for display.
+///
+/// Prefers `argv0` over the kernel's process name, which for some runtimes is a
+/// version string rather than the command -- Claude Code reports "2.1.294".
+///
+/// Normally that is the job leader: in `caffeinate -i | claude` the leader is
+/// claude, which is the point of the pane. A wrapper leader is the exception --
+/// `safe-chain` fronts `bun run dev` -- so the search falls through to the
+/// first process underneath it that is not itself a wrapper.
+pub(super) fn foreground_process_name(
+    info: &crate::api::schema::PaneProcessInfo,
+) -> Option<String> {
+    let is_wrapper = |process: &crate::api::schema::PaneProcessInfoProcess| {
+        process_command(process).is_some_and(|name| PROCESS_WRAPPERS.contains(&name.as_str()))
+    };
+    let leader = info
+        .foreground_processes
+        .iter()
+        .find(|process| Some(process.pid) == info.foreground_process_group_id);
+    if let Some(leader) = leader.filter(|leader| !is_wrapper(leader)) {
+        return process_command(leader);
+    }
+    let mut rest = info
+        .foreground_processes
+        .iter()
+        .filter(|process| !is_wrapper(process))
+        .collect::<Vec<_>>();
+    // Oldest first: a wrapper's immediate child is what it was asked to run.
+    rest.sort_by_key(|process| process.pid);
+    rest.first().copied().or(leader).and_then(process_command)
 }
 
 /// How often each pane is asked what it is running. Slow on purpose: it is a
@@ -293,6 +330,17 @@ fn push_plain_panes(
     agent_panes: &[String],
     pane_processes: &std::collections::HashMap<String, String>,
 ) {
+    // A repo parent heads the worktrees under it. Its own shell is implied, and
+    // listing it puts a pane row against every project heading for nothing.
+    let is_repo_parent = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == workspace_id)
+        .and_then(|workspace| workspace.worktree.as_ref())
+        .is_some_and(|worktree| !worktree.is_linked_worktree);
+    if is_repo_parent {
+        return;
+    }
     for pane in snapshot
         .panes
         .iter()
@@ -622,7 +670,9 @@ mod tests {
             &HashMap::new(),
             true,
         );
-        assert_eq!(kinds(&rows), ["workspace", "pane"]);
+        // A repo parent heads its worktrees; its own shell is implied, so it
+        // gets no pane row of its own.
+        assert_eq!(kinds(&rows), ["workspace"]);
     }
 
     #[test]
