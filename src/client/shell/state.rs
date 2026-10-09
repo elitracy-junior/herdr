@@ -872,6 +872,13 @@ pub(crate) struct ClientShellState {
     /// far more often than this needs to be right. Presentation state, so it
     /// lives with the client rather than the runtime.
     pub(super) pane_processes: std::collections::HashMap<String, String>,
+    /// Ports each pane is listening on, as the row renders them.
+    pub(super) pane_ports: std::collections::HashMap<String, Vec<u16>>,
+    /// Step of the breath on a serving pane's mark.
+    pub(super) server_pulse_frame: usize,
+    pub(super) server_pulse_deadline: Option<std::time::Instant>,
+    /// Listening sockets, scanned off the UI thread; see `port_scan`.
+    pub(super) listening_ports: super::port_scan::ListeningPorts,
     /// Waiting for a surface that matches newly changed chrome geometry.
     pub(super) chrome_resize_pending: bool,
     pub(super) pane_process_deadline: Option<std::time::Instant>,
@@ -1046,6 +1053,10 @@ impl ClientShellState {
             agent_animation_frame: 0,
             agent_animation_deadline: None,
             pane_processes: std::collections::HashMap::new(),
+            pane_ports: std::collections::HashMap::new(),
+            server_pulse_frame: 0,
+            server_pulse_deadline: None,
+            listening_ports: super::port_scan::ListeningPorts::spawn(),
             chrome_resize_pending: false,
             pane_process_deadline: None,
             active_snapshot_generation: None,
@@ -1887,6 +1898,8 @@ impl ClientShellState {
             _ => {}
         }
         self.pane_process_deadline = Some(now + super::projects::PANE_PROCESS_INTERVAL);
+        // Tells the worker the tree is being drawn; it scans at its own pace.
+        self.listening_ports.request();
         let pane_ids = self.snapshot.as_deref().map_or_else(Vec::new, |snapshot| {
             snapshot
                 .panes
@@ -1900,6 +1913,8 @@ impl ClientShellState {
         // Panes that went away take their cached answer with them.
         self.pane_processes
             .retain(|pane_id, _| pane_ids.iter().any(|id| id == pane_id));
+        self.pane_ports
+            .retain(|pane_id, _| pane_ids.iter().any(|id| id == pane_id));
         for pane_id in pane_ids {
             self.push_endpoint_method_with_kind(
                 crate::api::schema::Method::PaneProcessInfo(
@@ -1912,6 +1927,26 @@ impl ClientShellState {
             );
         }
         true
+    }
+
+    /// Advance the breath on serving panes. Returns whether it moved, so the
+    /// sidebar only redraws on a step rather than on every loop tick.
+    ///
+    /// Stops dead when nothing is serving: an idle session must not repaint
+    /// twice a second for an animation with nothing to animate.
+    pub(crate) fn tick_server_pulse(&mut self, now: std::time::Instant) -> bool {
+        if self.pane_ports.is_empty() {
+            self.server_pulse_deadline = None;
+            return false;
+        }
+        match self.server_pulse_deadline {
+            Some(deadline) if now < deadline => false,
+            _ => {
+                self.server_pulse_frame = self.server_pulse_frame.wrapping_add(1);
+                self.server_pulse_deadline = Some(now + super::projects::SERVER_PULSE_INTERVAL);
+                true
+            }
+        }
     }
 
     pub(crate) fn tick_popup_pending(&mut self, now: std::time::Instant) {
@@ -1989,6 +2024,7 @@ impl ClientShellState {
             .into_iter()
             .chain(self.selection_repaint_deadline)
             .chain(self.agent_animation_deadline)
+            .chain(self.server_pulse_deadline)
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

@@ -511,6 +511,15 @@ impl ClientShellState {
             let previous = self.pane_processes.get(&pane_id).cloned();
             match result {
                 Ok(crate::api::schema::ResponseResult::PaneProcessInfo { process_info }) => {
+                    let pids = process_info
+                        .foreground_processes
+                        .iter()
+                        .map(|process| process.pid)
+                        .collect::<Vec<_>>();
+                    match self.listening_ports.for_pids(&pids) {
+                        ports if ports.is_empty() => self.pane_ports.remove(&pane_id),
+                        ports => self.pane_ports.insert(pane_id.clone(), ports),
+                    };
                     match super::projects::foreground_process_name(&process_info) {
                         Some(name) => self.pane_processes.insert(pane_id.clone(), name),
                         None => self.pane_processes.remove(&pane_id),
@@ -520,6 +529,7 @@ impl ClientShellState {
                 // than as whatever it was running a moment ago.
                 _ => {
                     self.pane_processes.remove(&pane_id);
+                    self.pane_ports.remove(&pane_id);
                 }
             }
             // Only redraw when the answer actually changed; this runs on a

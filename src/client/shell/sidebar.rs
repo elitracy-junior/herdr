@@ -244,6 +244,7 @@ pub(crate) fn render_sidebar(
         state.collapsed_groups,
         state.collapsed_agent_lists,
         state.pane_processes,
+        state.pane_ports,
         projects,
     );
     let body = Rect::new(
@@ -392,9 +393,18 @@ pub(crate) fn render_sidebar(
             super::projects::ProjectRow::Pane {
                 pane_id,
                 process,
+                ports,
                 focused,
             } => {
-                super::projects::render_pane(buffer, rect, process.as_deref(), *focused, palette);
+                super::projects::render_pane(
+                    buffer,
+                    rect,
+                    process.as_deref(),
+                    ports,
+                    state.server_pulse_frame,
+                    *focused,
+                    palette,
+                );
                 // Same hit list the agent rows use, so a click focuses the pane.
                 hits.agents.push((rect, pane_id.clone()));
             }

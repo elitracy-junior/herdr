@@ -32,6 +32,8 @@ pub(super) enum ProjectRow {
     Pane {
         pane_id: String,
         process: Option<String>,
+        /// Ports it is listening on, when it is serving something.
+        ports: Vec<u16>,
         focused: bool,
     },
 }
@@ -48,6 +50,26 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 /// Marks a pane with no agent in it.
 const PANE_GLYPH: &str = "\u{25aa}";
+
+/// A pane that is serving breathes: the mark grows and shrinks again.
+///
+/// Deliberately not a spinner. A spinner sweeps in one direction and restarts,
+/// which reads as waiting on something, and a server that has been up for an
+/// hour should not look like it is stuck mid-request. This oscillates instead,
+/// so it has no restart to notice -- it just looks alive.
+const SERVER_PULSE: [&str; 4] = ["\u{00b7}", "\u{2022}", "\u{25cf}", "\u{2022}"];
+
+/// How long each step of the breath lasts. Slow: one breath is about two
+/// seconds, which reads as a heartbeat rather than activity.
+pub(crate) const SERVER_PULSE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(450);
+
+/// The mark for a pane: breathing when it is serving, static otherwise.
+fn pane_glyph(ports: &[u16], pulse: usize) -> &'static str {
+    if ports.is_empty() {
+        return PANE_GLYPH;
+    }
+    SERVER_PULSE[pulse % SERVER_PULSE.len()]
+}
 
 /// The agent mark itself, for an agent that is present but not working.
 const AGENT_GLYPH: &str = "\u{f06a9}";
@@ -249,6 +271,7 @@ pub(super) fn project_rows(
     collapsed_groups: &HashSet<String>,
     collapsed_agent_lists: &HashSet<String>,
     pane_processes: &std::collections::HashMap<String, String>,
+    pane_ports: &std::collections::HashMap<String, Vec<u16>>,
     include_agents: bool,
 ) -> Vec<ProjectRow> {
     let entries = super::sidebar::workspace_entries(snapshot, collapsed_groups);
@@ -289,6 +312,7 @@ pub(super) fn project_rows(
                 &workspace_id,
                 &pane_ids,
                 pane_processes,
+                pane_ports,
             );
             continue;
         }
@@ -316,6 +340,7 @@ pub(super) fn project_rows(
             &workspace_id,
             &pane_ids,
             pane_processes,
+            pane_ports,
         );
     }
     rows
@@ -329,6 +354,7 @@ fn push_plain_panes(
     workspace_id: &str,
     agent_panes: &[String],
     pane_processes: &std::collections::HashMap<String, String>,
+    pane_ports: &std::collections::HashMap<String, Vec<u16>>,
 ) {
     // A repo parent heads the worktrees under it. Its own shell is implied, and
     // listing it puts a pane row against every project heading for nothing.
@@ -350,6 +376,7 @@ fn push_plain_panes(
         rows.push(ProjectRow::Pane {
             pane_id: pane.pane_id.clone(),
             process: pane_processes.get(&pane.pane_id).cloned(),
+            ports: pane_ports.get(&pane.pane_id).cloned().unwrap_or_default(),
             focused: pane.focused,
         });
     }
@@ -404,13 +431,21 @@ pub(super) fn render_pane(
     buffer: &mut Buffer,
     rect: Rect,
     process: Option<&str>,
+    ports: &[u16],
+    pulse: usize,
     focused: bool,
     palette: &Palette,
 ) {
     if focused {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let label = process.unwrap_or("pane");
+    // A pane that serves something is mostly interesting for where to reach it,
+    // so the ports follow the command.
+    let mut owned = process.unwrap_or("pane").to_owned();
+    for port in ports {
+        owned.push_str(&format!("  :{port}"));
+    }
+    let label = owned.as_str();
     let style = Style::default().fg(if process.is_some() {
         palette.subtext0
     } else {
@@ -421,7 +456,7 @@ pub(super) fn render_pane(
         rect.x.saturating_add(AGENT_INDENT),
         rect.y,
         rect.width.saturating_sub(AGENT_INDENT),
-        &format!("{PANE_GLYPH} {label}"),
+        &format!("{} {label}", pane_glyph(ports, pulse)),
         style,
     );
 }
@@ -508,6 +543,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         let ProjectRow::Agent(row) = rows
@@ -589,6 +625,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         let project = ProjectRow::Workspace(WorkspaceEntry {
@@ -644,6 +681,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         assert!(kinds(&rows).is_empty(), "a repo heading nothing is hidden");
@@ -656,6 +694,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
@@ -667,6 +706,7 @@ mod tests {
             &config(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashMap::new(),
             true,
         );
@@ -685,6 +725,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             false,
         );
         assert_eq!(kinds(&rows), ["workspace"]);
@@ -699,6 +740,7 @@ mod tests {
             &config(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashMap::new(),
             true,
         );
@@ -724,6 +766,7 @@ mod tests {
             &HashSet::new(),
             &collapsed,
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         assert_eq!(kinds(&rows), ["workspace", "fold"]);
@@ -747,10 +790,67 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             true,
         );
         // No agent, but the space still has a pane of its own to show.
         assert_eq!(kinds(&rows), ["workspace", "pane"]);
+    }
+
+    #[test]
+    fn a_serving_pane_breathes_and_an_idle_one_does_not() {
+        // Only a serving pane animates; everything else holds still.
+        assert_eq!(pane_glyph(&[], 0), PANE_GLYPH);
+        assert_eq!(pane_glyph(&[], 7), PANE_GLYPH);
+
+        let breath: Vec<&str> = (0..SERVER_PULSE.len())
+            .map(|frame| pane_glyph(&[3000], frame))
+            .collect();
+
+        // It oscillates rather than sweeping: the second half retraces the
+        // first. That is what keeps it from reading as a spinner, which always
+        // moves one way and restarts, and so looks like it is waiting.
+        assert_eq!(breath[1], breath[3]);
+        assert_ne!(breath[0], breath[2]);
+
+        // And it returns to where it began, so there is no restart to see.
+        assert_eq!(pane_glyph(&[3000], SERVER_PULSE.len()), breath[0]);
+    }
+
+    #[test]
+    fn a_serving_pane_carries_its_ports() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = Vec::new();
+        let processes = HashMap::from([("pane_1".to_string(), "bun".to_string())]);
+        let ports = HashMap::from([("pane_1".to_string(), vec![3000u16, 3500])]);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &processes,
+            &ports,
+            true,
+        );
+        let ProjectRow::Pane { ports, .. } = &rows[1] else {
+            panic!("expected a pane row");
+        };
+        assert_eq!(ports, &[3000, 3500]);
+
+        // A pane serving nothing carries none rather than an empty placeholder.
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &processes,
+            &HashMap::new(),
+            true,
+        );
+        let ProjectRow::Pane { ports, .. } = &rows[1] else {
+            panic!("expected a pane row");
+        };
+        assert!(ports.is_empty());
     }
 
     #[test]
@@ -764,6 +864,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &processes,
+            &HashMap::new(),
             true,
         );
         assert_eq!(kinds(&rows), ["workspace", "pane"]);
@@ -784,6 +885,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &processes,
+            &HashMap::new(),
             true,
         );
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
@@ -798,6 +900,7 @@ mod tests {
             &config(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashMap::new(),
             true,
         );
