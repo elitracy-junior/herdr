@@ -174,6 +174,15 @@ impl ClientShellState {
                     && self.navigation_target_valid(&pending.target)
             });
         if self.snapshot.is_none() || self.pane_surface.is_none() {
+            // A chrome resize drops the surface on purpose, because drawing it
+            // at the new geometry would misplace terminal content. Painting the
+            // unavailable frame in that window blanks every pane for a moment,
+            // which is the blink on each sidebar toggle or drag. There is still
+            // a good frame on screen, so emit nothing and let it stand until
+            // the resized surface lands.
+            if self.chrome_resize_pending && self.snapshot.is_some() {
+                return None;
+            }
             return Some(self.compose_unavailable(cols, rows).into());
         }
         let snapshot = self.snapshot.as_deref()?;

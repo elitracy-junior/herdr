@@ -15,6 +15,9 @@ impl ClientShellState {
         if self.sidebar_width != width {
             self.sidebar_width = width;
             self.sidebar_width_manual = true;
+            // Dragging is continuous and wants live local feedback, so this
+            // keeps redrawing rather than holding the frame the way the toggle
+            // does.
             self.invalidate_pane_surface();
             outcome.repaint = true;
             outcome.resize = true;
@@ -2053,7 +2056,7 @@ impl ClientShellState {
                 if super::contains(self.hits.sidebar_toggle, point) {
                     self.sidebar_collapsed = !self.sidebar_collapsed;
                     self.sidebar_collapsed_manual = true;
-                    self.invalidate_pane_surface();
+                    self.invalidate_pane_surface_for_chrome_resize();
                     outcome.repaint = true;
                     outcome.resize = true;
                     self.persist_chrome_preferences(outcome);

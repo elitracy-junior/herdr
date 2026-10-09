@@ -872,6 +872,8 @@ pub(crate) struct ClientShellState {
     /// far more often than this needs to be right. Presentation state, so it
     /// lives with the client rather than the runtime.
     pub(super) pane_processes: std::collections::HashMap<String, String>,
+    /// Waiting for a surface that matches newly changed chrome geometry.
+    pub(super) chrome_resize_pending: bool,
     pub(super) pane_process_deadline: Option<std::time::Instant>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
@@ -1044,6 +1046,7 @@ impl ClientShellState {
             agent_animation_frame: 0,
             agent_animation_deadline: None,
             pane_processes: std::collections::HashMap::new(),
+            chrome_resize_pending: false,
             pane_process_deadline: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
@@ -1835,6 +1838,7 @@ impl ClientShellState {
         self.graphics
             .set_scene(std::mem::take(&mut surface.graphics));
         self.pane_surface = Some(surface);
+        self.chrome_resize_pending = false;
         self.pane_surface_generation = self.active_snapshot_generation;
         self.invalidate_link_hover();
         self.resume_mobile_switcher_if_ready();
@@ -1988,6 +1992,29 @@ impl ClientShellState {
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)
+    }
+
+    /// Chrome geometry changed: the hit map and mouse mapping are stale, but
+    /// the pane content is not.
+    ///
+    /// Dropping the surface outright makes `compose` fall through to the
+    /// unavailable frame -- an empty buffer painted in the panel colour -- so
+    /// the panes blank until the resized surface arrives, which reads as a
+    /// blink every time the sidebar is toggled or dragged. Keeping it lets the
+    /// next frame redraw the retained content at the new geometry instead.
+    /// Drop the surface because the chrome changed shape, and hold the current
+    /// frame until the resized one arrives.
+    ///
+    /// The surface still has to go: drawing it at the new geometry would put
+    /// terminal content at the wrong size. What changes is what is shown in the
+    /// meantime. `compose` otherwise paints the unavailable frame -- an empty
+    /// buffer in the panel colour -- which blanks every pane and reads as a
+    /// blink on each toggle or drag. Emitting no frame leaves the last good one
+    /// on screen until the resized surface lands, so the window updates in one
+    /// step instead of flashing.
+    pub(crate) fn invalidate_pane_surface_for_chrome_resize(&mut self) {
+        self.invalidate_pane_surface();
+        self.chrome_resize_pending = true;
     }
 
     pub(crate) fn invalidate_pane_surface(&mut self) {

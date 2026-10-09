@@ -190,7 +190,10 @@ fn status_icon(
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
+        // Not U+25D0: the half-filled circle is absent from common terminal
+        // fonts, so it resolves to a fallback face and changes size as a row is
+        // highlighted. Every other glyph here is widely present.
+        (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◉",
         (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",

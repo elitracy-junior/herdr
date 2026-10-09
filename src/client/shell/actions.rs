@@ -14,7 +14,7 @@ impl ClientShellState {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
                 self.reveal_navigation_workspace = true;
-                self.invalidate_pane_surface();
+                self.invalidate_pane_surface_for_chrome_resize();
                 outcome.repaint = true;
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);

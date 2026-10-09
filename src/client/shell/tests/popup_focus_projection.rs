@@ -1242,3 +1242,32 @@ fn retained_surface_patch_rejects_stale_base_without_mutating_surface() {
     assert!(matches!(outcome, ClientPaneSurfacePatchOutcome::Rejected));
     assert_eq!(state.pane_surface, before);
 }
+
+#[test]
+fn toggling_the_sidebar_holds_the_frame_instead_of_blanking_the_panes() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    assert!(state.compose(106, 30).is_some());
+
+    // A toggle drops the surface, because drawing it at the new geometry would
+    // misplace terminal content. Painting the unavailable frame in that window
+    // blanks every pane, which is the blink; emitting nothing leaves the last
+    // good frame on screen until the resized surface lands.
+    state.invalidate_pane_surface_for_chrome_resize();
+    assert!(state.pane_surface.is_none());
+    assert!(
+        state.compose(106, 30).is_none(),
+        "a sidebar toggle must hold the frame, not paint an empty one"
+    );
+
+    // Once the resized surface arrives the window updates in one step.
+    state.set_pane_surface(surface());
+    assert!(!state.chrome_resize_pending);
+    assert!(state.compose(106, 30).is_some());
+
+    // Losing the surface for any other reason still shows the placeholder,
+    // since there is nothing good left on screen to keep.
+    state.invalidate_pane_surface();
+    assert!(state.compose(106, 30).is_some());
+}
