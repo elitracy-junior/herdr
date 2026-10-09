@@ -243,6 +243,7 @@ pub(crate) fn render_sidebar(
         config,
         state.collapsed_groups,
         state.collapsed_agent_lists,
+        state.pane_processes,
         projects,
     );
     let body = Rect::new(
@@ -387,6 +388,15 @@ pub(crate) fn render_sidebar(
             } => {
                 super::projects::render_agent_fold(buffer, rect, *count, *collapsed, palette);
                 hits.agent_folds.push((rect, workspace_id.clone()));
+            }
+            super::projects::ProjectRow::Pane {
+                pane_id,
+                process,
+                focused,
+            } => {
+                super::projects::render_pane(buffer, rect, process.as_deref(), *focused, palette);
+                // Same hit list the agent rows use, so a click focuses the pane.
+                hits.agents.push((rect, pane_id.clone()));
             }
             super::projects::ProjectRow::Agent(row) => {
                 super::projects::render_nested_agent(

@@ -655,6 +655,9 @@ pub(super) enum PendingEndpointKind {
         absolute_row: u32,
         generation: u64,
     },
+    PaneProcessInfo {
+        pane_id: String,
+    },
     PaneLinkResolve {
         target: super::link_hover::LinkHoverTarget,
     },
@@ -862,6 +865,14 @@ pub(crate) struct ClientShellState {
     /// for it -- sidebar render is a per-client, per-workspace path.
     pub(super) agent_animation_frame: usize,
     pub(super) agent_animation_deadline: Option<std::time::Instant>,
+    /// What each pane is running, by pane id, for the Projects tree.
+    ///
+    /// Asked for on a timer rather than carried in the snapshot: reading a
+    /// pane's foreground job is a process-tree walk, and the snapshot is built
+    /// far more often than this needs to be right. Presentation state, so it
+    /// lives with the client rather than the runtime.
+    pub(super) pane_processes: std::collections::HashMap<String, String>,
+    pub(super) pane_process_deadline: Option<std::time::Instant>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
@@ -1032,6 +1043,8 @@ impl ClientShellState {
             snapshot: None,
             agent_animation_frame: 0,
             agent_animation_deadline: None,
+            pane_processes: std::collections::HashMap::new(),
+            pane_process_deadline: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -1850,6 +1863,51 @@ impl ClientShellState {
                 true
             }
         }
+    }
+
+    /// Refresh what each pane is running. Returns whether anything was asked
+    /// for, so the caller can flush the requests.
+    ///
+    /// Only runs while the Projects tree is on, since nothing else shows it,
+    /// and only for panes of the local endpoint that the tree can display.
+    pub(crate) fn tick_pane_processes(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if !self.config.projects_sidebar || self.sidebar_collapsed {
+            return false;
+        }
+        match self.pane_process_deadline {
+            Some(deadline) if now < deadline => return false,
+            _ => {}
+        }
+        self.pane_process_deadline = Some(now + super::projects::PANE_PROCESS_INTERVAL);
+        let pane_ids = self.snapshot.as_deref().map_or_else(Vec::new, |snapshot| {
+            snapshot
+                .panes
+                .iter()
+                .map(|pane| pane.pane_id.clone())
+                .collect::<Vec<_>>()
+        });
+        if pane_ids.is_empty() {
+            return false;
+        }
+        // Panes that went away take their cached answer with them.
+        self.pane_processes
+            .retain(|pane_id, _| pane_ids.iter().any(|id| id == pane_id));
+        for pane_id in pane_ids {
+            self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::PaneProcessInfo(
+                    crate::api::schema::PaneProcessInfoParams {
+                        pane_id: Some(pane_id.clone()),
+                    },
+                ),
+                PendingEndpointKind::PaneProcessInfo { pane_id },
+                outcome,
+            );
+        }
+        true
     }
 
     pub(crate) fn tick_popup_pending(&mut self, now: std::time::Instant) {

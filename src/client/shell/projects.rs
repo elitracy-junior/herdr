@@ -27,6 +27,13 @@ pub(super) enum ProjectRow {
     },
     /// One agent inside that workspace.
     Agent(Box<AgentRow>),
+    /// A pane of that workspace that no agent occupies: an editor, a dev
+    /// server, a shell. `process` is what it is running, once that is known.
+    Pane {
+        pane_id: String,
+        process: Option<String>,
+        focused: bool,
+    },
 }
 
 /// Columns an agent row and its fold sit in, relative to the Space row that
@@ -39,8 +46,41 @@ pub(super) const AGENT_INDENT: u16 = 8;
 /// a different face -- which visibly changes size as a row is highlighted.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Marks a pane with no agent in it.
+const PANE_GLYPH: &str = "\u{25aa}";
+
 /// The agent mark itself, for an agent that is present but not working.
 const AGENT_GLYPH: &str = "\u{f06a9}";
+
+/// What a pane is running, for display: the foreground job's own command.
+///
+/// Prefers `argv0` over the kernel's process name, which for some runtimes is
+/// a version string rather than the command -- Claude Code reports "2.1.294".
+/// Takes the group leader, since a helper sharing its job is not what the pane
+/// is running.
+pub(super) fn foreground_process_name(
+    info: &crate::api::schema::PaneProcessInfo,
+) -> Option<String> {
+    let leader = info
+        .foreground_processes
+        .iter()
+        .find(|process| Some(process.pid) == info.foreground_process_group_id)
+        .or_else(|| info.foreground_processes.first())?;
+    let name = leader
+        .argv0
+        .as_deref()
+        .filter(|argv0| !argv0.is_empty())
+        .unwrap_or(leader.name.as_str());
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let name = name.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// How often each pane is asked what it is running. Slow on purpose: it is a
+/// process-tree walk per pane, and a command that just started is still news a
+/// second later.
+pub(crate) const PANE_PROCESS_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(2000);
 
 /// How often the spinner advances.
 pub(crate) const AGENT_ANIMATION_INTERVAL: std::time::Duration =
@@ -92,6 +132,7 @@ impl ProjectRow {
                 .unwrap_or(1),
             Self::AgentFold { .. } => 1,
             Self::Agent(row) => row.rows.len(),
+            Self::Pane { .. } => 1,
         };
         lines.max(1).min(u16::MAX as usize) as u16
     }
@@ -170,6 +211,7 @@ pub(super) fn project_rows(
     config: &ClientShellConfig,
     collapsed_groups: &HashSet<String>,
     collapsed_agent_lists: &HashSet<String>,
+    pane_processes: &std::collections::HashMap<String, String>,
     include_agents: bool,
 ) -> Vec<ProjectRow> {
     let entries = super::sidebar::workspace_entries(snapshot, collapsed_groups);
@@ -204,6 +246,13 @@ pub(super) fn project_rows(
                 })
                 .collect::<Vec<_>>();
         if pane_ids.is_empty() {
+            push_plain_panes(
+                &mut rows,
+                snapshot,
+                &workspace_id,
+                &pane_ids,
+                pane_processes,
+            );
             continue;
         }
         // One agent needs no fold: the header would be taller than the row it
@@ -219,13 +268,43 @@ pub(super) fn project_rows(
                 continue;
             }
         }
-        for pane_id in pane_ids {
-            if let Some(row) = agent_row_with(snapshot, &pane_id, None, &nested) {
+        for pane_id in &pane_ids {
+            if let Some(row) = agent_row_with(snapshot, pane_id, None, &nested) {
                 rows.push(ProjectRow::Agent(Box::new(row)));
             }
         }
+        push_plain_panes(
+            &mut rows,
+            snapshot,
+            &workspace_id,
+            &pane_ids,
+            pane_processes,
+        );
     }
     rows
+}
+
+/// The space's panes that no agent occupies: the editor, the dev server, the
+/// shell left running. An agent's pane is already listed as the agent itself.
+fn push_plain_panes(
+    rows: &mut Vec<ProjectRow>,
+    snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
+    agent_panes: &[String],
+    pane_processes: &std::collections::HashMap<String, String>,
+) {
+    for pane in snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.workspace_id == workspace_id)
+        .filter(|pane| !agent_panes.iter().any(|agent| agent == &pane.pane_id))
+    {
+        rows.push(ProjectRow::Pane {
+            pane_id: pane.pane_id.clone(),
+            process: pane_processes.get(&pane.pane_id).cloned(),
+            focused: pane.focused,
+        });
+    }
 }
 
 /// Draw one agent nested under its Space.
@@ -271,6 +350,34 @@ pub(super) fn render_nested_agent(
     }
 }
 
+/// Draw one pane nested under its Space: what it is running, or just the pane
+/// when that is not known yet.
+pub(super) fn render_pane(
+    buffer: &mut Buffer,
+    rect: Rect,
+    process: Option<&str>,
+    focused: bool,
+    palette: &Palette,
+) {
+    if focused {
+        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+    }
+    let label = process.unwrap_or("pane");
+    let style = Style::default().fg(if process.is_some() {
+        palette.subtext0
+    } else {
+        palette.overlay0
+    });
+    put_text(
+        buffer,
+        rect.x.saturating_add(AGENT_INDENT),
+        rect.y,
+        rect.width.saturating_sub(AGENT_INDENT),
+        &format!("{PANE_GLYPH} {label}"),
+        style,
+    );
+}
+
 /// Draw the "N agents" fold.
 pub(super) fn render_agent_fold(
     buffer: &mut Buffer,
@@ -306,6 +413,7 @@ mod tests {
     use super::*;
     use crate::api::schema::AgentStatus;
     use crate::protocol::ClientShellAgent;
+    use std::collections::HashMap;
 
     fn agent(pane_id: &str, workspace_id: &str) -> ClientShellAgent {
         ClientShellAgent {
@@ -336,6 +444,7 @@ mod tests {
                 ProjectRow::Workspace(_) => "workspace",
                 ProjectRow::AgentFold { .. } => "fold",
                 ProjectRow::Agent(_) => "agent",
+                ProjectRow::Pane { .. } => "pane",
             })
             .collect()
     }
@@ -345,7 +454,14 @@ mod tests {
         use crate::ui::ResolvedTokenKind;
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1"), agent("pane_2", "ws_1")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         let ProjectRow::Agent(row) = rows
             .iter()
             .find(|r| matches!(r, ProjectRow::Agent(_)))
@@ -419,7 +535,14 @@ mod tests {
     fn a_project_is_parted_from_the_one_above_it() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         let project = ProjectRow::Workspace(WorkspaceEntry {
             index: 0,
             indented: false,
@@ -467,18 +590,39 @@ mod tests {
             label: "repo".into(),
             is_linked_worktree: false,
         });
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         assert!(kinds(&rows).is_empty(), "a repo heading nothing is hidden");
 
         // Still tracked, so a live pane in it is never stranded.
         snapshot.agents = vec![agent("pane_1", "ws_1")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
 
         snapshot.agents = Vec::new();
         snapshot.workspaces[0].focused = true;
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
-        assert_eq!(kinds(&rows), ["workspace"]);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "pane"]);
     }
 
     #[test]
@@ -490,6 +634,7 @@ mod tests {
             &config(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             false,
         );
         assert_eq!(kinds(&rows), ["workspace"]);
@@ -499,7 +644,14 @@ mod tests {
     fn agents_nest_under_their_own_workspace_behind_a_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1"), agent("pane_2", "ws_1")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(kinds(&rows), ["workspace", "fold", "agent", "agent"]);
         let ProjectRow::AgentFold {
             count, collapsed, ..
@@ -516,7 +668,14 @@ mod tests {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1"), agent("pane_2", "ws_1")];
         let collapsed = HashSet::from(["ws_1".to_string()]);
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &collapsed, true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &collapsed,
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(kinds(&rows), ["workspace", "fold"]);
         let ProjectRow::AgentFold {
             count, collapsed, ..
@@ -532,15 +691,66 @@ mod tests {
     fn a_workspace_with_no_agents_gets_no_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_9", "ws_other")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
-        assert_eq!(kinds(&rows), ["workspace"]);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
+        // No agent, but the space still has a pane of its own to show.
+        assert_eq!(kinds(&rows), ["workspace", "pane"]);
+    }
+
+    #[test]
+    fn a_pane_is_listed_once_and_shows_what_it_runs() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = Vec::new();
+        let processes = HashMap::from([("pane_1".to_string(), "nvim".to_string())]);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &processes,
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "pane"]);
+        let ProjectRow::Pane {
+            process, pane_id, ..
+        } = &rows[1]
+        else {
+            panic!("expected a pane row");
+        };
+        assert_eq!(process.as_deref(), Some("nvim"));
+        assert_eq!(pane_id, "pane_1");
+
+        // The same pane running an agent is the agent row, not a second row.
+        snapshot.agents = vec![agent("pane_1", "ws_1")];
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &processes,
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "agent"]);
     }
 
     #[test]
     fn a_lone_agent_shows_without_a_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
         snapshot.agents = vec![agent("pane_1", "ws_1")];
-        let rows = project_rows(&snapshot, &config(), &HashSet::new(), &HashSet::new(), true);
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
     }
 }

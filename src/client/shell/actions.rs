@@ -507,6 +507,26 @@ impl ClientShellState {
         {
             return (false, Vec::new());
         }
+        if let PendingEndpointKind::PaneProcessInfo { pane_id } = pending.kind {
+            let previous = self.pane_processes.get(&pane_id).cloned();
+            match result {
+                Ok(crate::api::schema::ResponseResult::PaneProcessInfo { process_info }) => {
+                    match super::projects::foreground_process_name(&process_info) {
+                        Some(name) => self.pane_processes.insert(pane_id.clone(), name),
+                        None => self.pane_processes.remove(&pane_id),
+                    };
+                }
+                // A pane that cannot be read is better shown as a plain pane
+                // than as whatever it was running a moment ago.
+                _ => {
+                    self.pane_processes.remove(&pane_id);
+                }
+            }
+            // Only redraw when the answer actually changed; this runs on a
+            // timer for every pane.
+            let changed = previous != self.pane_processes.get(&pane_id).cloned();
+            return (changed, Vec::new());
+        }
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
