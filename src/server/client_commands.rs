@@ -28,6 +28,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.input.set",
     "pane.link.activate",
     "pane.link.resolve",
+    "pane.process_info",
     "pane.rename",
     "pane.resize",
     "pane.scroll",
@@ -297,6 +298,10 @@ mod tests {
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
+        assert_eq!(
+            actual.remove("pane.process_info").as_deref(),
+            Some("edb54d31ddde3f9b95d090f900cb500d57cc95b4c790628baa3b213b9fbfa10e")
+        );
 
         assert_eq!(
             actual, expected,
@@ -432,5 +437,13 @@ mod tests {
         }
 
         assert_eq!(received, response.as_bytes());
+    }
+
+    /// The sidebar polls what each pane is running on a timer. Leaving the
+    /// method out of the lane makes every poll fail as an unsupported command,
+    /// which the client cannot distinguish from a pane running nothing.
+    #[test]
+    fn client_shell_lane_carries_pane_process_info() {
+        assert!(supports_client_shell_method_name("pane.process_info"));
     }
 }
