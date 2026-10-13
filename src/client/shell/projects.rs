@@ -27,6 +27,15 @@ pub(super) enum ProjectRow {
     },
     /// One agent inside that workspace.
     Agent(Box<AgentRow>),
+    /// What the workspace above is busy doing, while it is busy doing it:
+    /// a worktree being made, a checkout being torn down. Reported as workspace
+    /// metadata by whatever is doing the work.
+    Status {
+        text: String,
+        /// Whether the workspace it belongs to heads a project, so the Space
+        /// below still hugs its heading across this row.
+        project_header: bool,
+    },
     /// A pane of that workspace that no agent occupies: an editor, a dev
     /// server, a shell. `process` is what it is running, once that is known.
     Pane {
@@ -192,6 +201,7 @@ impl ProjectRow {
             Self::AgentFold { .. } => 1,
             Self::Agent(row) => row.rows.len(),
             Self::Pane { .. } => 1,
+            Self::Status { .. } => 1,
         };
         lines.max(1).min(u16::MAX as usize) as u16
     }
@@ -202,9 +212,15 @@ impl ProjectRow {
         matches!(self, Self::Workspace(entry) if !entry.indented)
     }
 
-    /// Whether this entry heads a project rather than sitting inside one.
-    fn is_project_header(&self) -> bool {
-        matches!(self, Self::Workspace(entry) if !entry.indented)
+    /// Whether this entry is part of a project's heading rather than something
+    /// sitting inside the project. A heading's own status row counts, so a
+    /// project reporting one still keeps its first Space attached to it.
+    fn opens_project(&self) -> bool {
+        match self {
+            Self::Workspace(entry) => !entry.indented,
+            Self::Status { project_header, .. } => *project_header,
+            _ => false,
+        }
     }
 }
 
@@ -237,6 +253,24 @@ fn is_empty_repo_parent(snapshot: &ClientShellSnapshot, entry: &WorkspaceEntry) 
     })
 }
 
+/// What a Space is in the middle of, if the layout named a token for it and the
+/// Space is reporting one. Slow work runs outside the session now, so this is
+/// the only sign of it until it finishes.
+fn workspace_status(
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    entry: &WorkspaceEntry,
+) -> Option<String> {
+    let name = config.projects_status_token.as_deref()?;
+    snapshot
+        .workspaces
+        .get(entry.index)?
+        .tokens
+        .iter()
+        .find(|(token, value)| token == name && !value.is_empty())
+        .map(|(_, value)| value.clone())
+}
+
 /// Blank rows between two entries in the Projects tree. Separation is what
 /// shows the grouping here, in place of the tree connectors the Spaces panel
 /// draws, so it has to say what belongs together as well as what does not: a
@@ -246,7 +280,7 @@ fn is_empty_repo_parent(snapshot: &ClientShellSnapshot, entry: &WorkspaceEntry) 
 pub(super) fn gap_between(previous: &ProjectRow, next: &ProjectRow) -> u16 {
     match next {
         ProjectRow::Workspace(entry) if !entry.indented => 2,
-        ProjectRow::Workspace(_) if previous.is_project_header() => 0,
+        ProjectRow::Workspace(_) if previous.opens_project() => 0,
         ProjectRow::Workspace(_) => 1,
         _ => 0,
     }
@@ -290,7 +324,15 @@ pub(super) fn project_rows(
             .workspaces
             .get(entry.index)
             .map(|workspace| workspace.workspace_id.clone());
+        let status = workspace_status(snapshot, config, &entry);
+        let project_header = !entry.indented;
         rows.push(ProjectRow::Workspace(entry));
+        if let Some(text) = status {
+            rows.push(ProjectRow::Status {
+                text,
+                project_header,
+            });
+        }
         let Some(workspace_id) = workspace_id else {
             continue;
         };
@@ -461,6 +503,27 @@ pub(super) fn render_pane(
     );
 }
 
+/// Draw what a Space is busy doing, under the Space itself.
+///
+/// A spinner here is right where it would be wrong on a server: this really is
+/// one job that ends, and the row goes away when it does.
+pub(super) fn render_status(
+    buffer: &mut Buffer,
+    rect: Rect,
+    text: &str,
+    frame: usize,
+    palette: &Palette,
+) {
+    put_text(
+        buffer,
+        rect.x.saturating_add(AGENT_INDENT),
+        rect.y,
+        rect.width.saturating_sub(AGENT_INDENT),
+        &format!("{} {text}", SPINNER[frame % SPINNER.len()]),
+        Style::default().fg(palette.overlay0),
+    );
+}
+
 /// Draw the "N agents" fold.
 pub(super) fn render_agent_fold(
     buffer: &mut Buffer,
@@ -528,6 +591,7 @@ mod tests {
                 ProjectRow::AgentFold { .. } => "fold",
                 ProjectRow::Agent(_) => "agent",
                 ProjectRow::Pane { .. } => "pane",
+                ProjectRow::Status { .. } => "status",
             })
             .collect()
     }
@@ -795,6 +859,91 @@ mod tests {
         );
         // No agent, but the space still has a pane of its own to show.
         assert_eq!(kinds(&rows), ["workspace", "pane"]);
+    }
+
+    fn config_with_status_token() -> ClientShellConfig {
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.projects_status_token = Some("hw_status".into());
+        ClientShellConfig::from_config(&config)
+    }
+
+    #[test]
+    fn a_space_reporting_a_job_shows_it_under_itself() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = Vec::new();
+        snapshot.workspaces[0]
+            .tokens
+            .push(("hw_status".into(), "tearing down".into()));
+
+        // Without a configured token the report is just metadata nobody reads.
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "pane"]);
+
+        let rows = project_rows(
+            &snapshot,
+            &config_with_status_token(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "status", "pane"]);
+        let ProjectRow::Status { text, .. } = &rows[1] else {
+            panic!("expected a status row");
+        };
+        assert_eq!(text, "tearing down");
+    }
+
+    #[test]
+    fn a_finished_job_clears_its_row_rather_than_reporting_empty() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = Vec::new();
+        // Clearing a token reports it empty rather than removing it, which must
+        // read as "no job" and not as a blank status line.
+        snapshot.workspaces[0]
+            .tokens
+            .push(("hw_status".into(), String::new()));
+        let rows = project_rows(
+            &snapshot,
+            &config_with_status_token(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(kinds(&rows), ["workspace", "pane"]);
+    }
+
+    #[test]
+    fn a_project_heading_keeps_its_first_space_across_a_status_row() {
+        let heading = ProjectRow::Status {
+            text: "spinning up".into(),
+            project_header: true,
+        };
+        let child = ProjectRow::Workspace(WorkspaceEntry {
+            index: 0,
+            indented: true,
+            last_child: false,
+        });
+        assert_eq!(gap_between(&heading, &child), 0);
+
+        // A worktree's own status row is not a heading, so the next Space is a
+        // sibling and keeps its parting gap.
+        let worktree = ProjectRow::Status {
+            text: "spinning up".into(),
+            project_header: false,
+        };
+        assert_eq!(gap_between(&worktree, &child), 1);
     }
 
     #[test]

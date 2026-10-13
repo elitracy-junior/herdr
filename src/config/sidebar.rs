@@ -644,6 +644,42 @@ pub struct SidebarConfig {
     /// repo, then its worktrees, then each worktree's agents nested beneath it.
     /// The Spaces and Agents row layouts still describe their own rows.
     pub projects: bool,
+    /// Metadata token naming what a Space is busy doing -- "spinning up",
+    /// "tearing down". While a Space reports a value for it, the Projects tree
+    /// shows that value under the Space with a spinner beside it, so slow work
+    /// started elsewhere stays visible without blocking the session.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_metadata_token",
+        serialize_with = "serialize_optional_metadata_token",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub projects_status_token: Option<String>,
+}
+
+fn deserialize_optional_metadata_token<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    parse_override_token(&value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
+fn serialize_optional_metadata_token<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(name) => serializer.serialize_str(&format!("${name}")),
+        None => serializer.serialize_none(),
+    }
 }
 
 #[cfg(test)]

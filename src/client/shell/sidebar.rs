@@ -408,6 +408,15 @@ pub(crate) fn render_sidebar(
                 // Same hit list the agent rows use, so a click focuses the pane.
                 hits.agents.push((rect, pane_id.clone()));
             }
+            super::projects::ProjectRow::Status { text, .. } => {
+                super::projects::render_status(
+                    buffer,
+                    rect,
+                    text,
+                    state.agent_animation_frame,
+                    palette,
+                );
+            }
             super::projects::ProjectRow::Agent(row) => {
                 super::projects::render_nested_agent(
                     buffer,

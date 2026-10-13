@@ -25,6 +25,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) agents: crate::config::AgentsSidebarConfig,
     /// One Projects tree instead of the split Spaces/Agents panels.
     pub(super) projects_sidebar: bool,
+    /// Metadata token naming the slow job a Space is in the middle of.
+    pub(super) projects_status_token: Option<String>,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
@@ -1856,14 +1858,27 @@ impl ClientShellState {
         self.reconcile_input_source();
     }
 
-    /// Advance the working-agent spinner. Returns whether the frame changed and
-    /// the sidebar therefore needs redrawing.
+    /// Advance the spinner shared by working agents and by Spaces reporting a
+    /// job in progress. Returns whether the frame changed and the sidebar
+    /// therefore needs redrawing.
+    ///
+    /// Stops dead when neither is present, so an idle session does not repaint
+    /// ten times a second for an animation with nothing to animate.
     pub(crate) fn tick_agent_animation(&mut self, now: std::time::Instant) -> bool {
+        let status_token = self.config.projects_status_token.as_deref();
         let working = self.snapshot.as_deref().is_some_and(|snapshot| {
             snapshot
                 .agents
                 .iter()
                 .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+                || status_token.is_some_and(|name| {
+                    snapshot.workspaces.iter().any(|workspace| {
+                        workspace
+                            .tokens
+                            .iter()
+                            .any(|(token, value)| token == name && !value.is_empty())
+                    })
+                })
         });
         if !working {
             self.agent_animation_deadline = None;

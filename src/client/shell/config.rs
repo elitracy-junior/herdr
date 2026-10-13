@@ -131,6 +131,7 @@ impl ClientShellConfig {
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
             projects_sidebar: config.ui.sidebar.projects,
+            projects_status_token: config.ui.sidebar.projects_status_token.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
@@ -335,6 +336,7 @@ impl ClientShellConfig {
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
                 self.projects_sidebar = ui.sidebar.projects;
+                self.projects_status_token = ui.sidebar.projects_status_token.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
