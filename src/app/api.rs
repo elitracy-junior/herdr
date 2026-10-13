@@ -1861,7 +1861,7 @@ mod tests {
 
         assert_eq!(
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
-            Some("__herdr_projects__ · 1")
+            Some("on __herdr_projects__")
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -1965,7 +1965,7 @@ mod tests {
                 .first()
                 .and_then(|delivery| delivery.toast.as_ref())
                 .map(|toast| toast.context.as_str()),
-            Some("__herdr_projects__ · 1")
+            Some("on __herdr_projects__")
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -2436,7 +2436,7 @@ mod tests {
         app.state.toast = Some(crate::app::state::ToastNotification {
             kind: ToastKind::Finished,
             title: "codex finished".into(),
-            context: "__herdr_original__ · 1".into(),
+            context: "on __herdr_original__".into(),
             position: None,
             target: Some(crate::app::state::ToastTarget {
                 workspace_id,
@@ -2456,7 +2456,7 @@ mod tests {
 
         assert_eq!(
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
-            Some("__herdr_original__ · 1")
+            Some("on __herdr_original__")
         );
     }
 }

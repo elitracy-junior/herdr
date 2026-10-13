@@ -3427,7 +3427,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(toast.context, "on background");
     }
 
     #[test]
@@ -3458,7 +3458,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(toast.context, "on background");
         assert!(state.pending_agent_notifications.is_empty());
     }
 
@@ -3790,7 +3790,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "hermes needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(toast.context, "on background");
     }
 
     #[test]
@@ -4108,7 +4108,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::Finished);
         assert_eq!(toast.title, "droid finished");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(toast.context, "on background");
         let target = toast.target.as_ref().expect("toast target");
         assert_eq!(&target.workspace_id, &state.workspaces[1].id);
         assert_eq!(target.pane_id, bg_pane_id);
@@ -4137,7 +4137,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2 · logs");
+        assert_eq!(toast.context, "on background · logs");
     }
 
     #[test]
@@ -4163,7 +4163,7 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "active · 1 · logs");
+        assert_eq!(toast.context, "on active · logs");
     }
 
     #[test]
