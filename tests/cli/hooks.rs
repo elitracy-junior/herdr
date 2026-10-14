@@ -170,6 +170,21 @@ fn claude_hook_clears_a_finished_subagent_token() {
 }
 
 #[test]
+fn claude_hook_reconciles_subagents_when_the_lead_stops() {
+    let request = run_claude_hook(
+        "subagent",
+        r#"{"hook_event_name":"Stop","background_tasks":[{"id":"a2b473f65a75d2b2c","type":"subagent","status":"running","description":"Find auth code"}]}"#,
+    )
+    .expect("a stop with background tasks reads the pane's tokens");
+
+    assert_eq!(request["method"], "pane.get");
+    assert_eq!(request["params"]["pane_id"], "p_test");
+
+    // A Claude without the list reports nothing it could be wrong about.
+    assert!(run_claude_hook("subagent", r#"{"hook_event_name":"Stop"}"#).is_none());
+}
+
+#[test]
 fn claude_hook_ignores_subagent_reports_it_cannot_key() {
     for input in [
         r#"{"hook_event_name":"SubagentStart","agent_id":"../a","agent_type":"Explore"}"#,

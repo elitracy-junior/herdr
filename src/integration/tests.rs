@@ -967,7 +967,7 @@ fn install_claude_writes_hook_and_updates_settings() {
         .as_str()
         .unwrap()
         .contains(" session"));
-    for event in ["SubagentStart", "SubagentStop"] {
+    for event in ["SubagentStart", "SubagentStop", "Stop"] {
         assert!(settings["hooks"][event][0].get("matcher").is_none());
         assert!(settings["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
@@ -979,7 +979,6 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -1021,7 +1020,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
     let settings: Value =
         serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
             .unwrap();
-    for event in ["SessionStart", "SubagentStart", "SubagentStop"] {
+    for event in ["SessionStart", "SubagentStart", "SubagentStop", "Stop"] {
         assert_eq!(settings["hooks"][event].as_array().unwrap().len(), 1);
     }
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
@@ -1029,7 +1028,6 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -1118,7 +1116,11 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
     );
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" subagent"));
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);

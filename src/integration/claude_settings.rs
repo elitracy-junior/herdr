@@ -28,8 +28,9 @@ struct OwnedHook {
 
 /// Session identity, plus the subagents a session starts and finishes. Claude
 /// runs subagents inside the lead's process, so these hooks are the only sign
-/// of them; both subagent events share one action and the script tells them
-/// apart by `hook_event_name`.
+/// of them. A killed subagent gets no SubagentStop, so the lead's Stop, which
+/// lists the subagents still running, reconciles them. The subagent events
+/// share one action and the script tells them apart by `hook_event_name`.
 const OWNED_HOOKS: &[OwnedHook] = &[
     OwnedHook {
         event: "SessionStart",
@@ -43,6 +44,11 @@ const OWNED_HOOKS: &[OwnedHook] = &[
     },
     OwnedHook {
         event: "SubagentStop",
+        matcher: None,
+        action: "subagent",
+    },
+    OwnedHook {
+        event: "Stop",
         matcher: None,
         action: "subagent",
     },
@@ -92,7 +98,7 @@ const HOOK_REMOVALS: &[HookRemoval] = &[
     },
     HookRemoval {
         event: "Stop",
-        actions: &["idle"],
+        actions: &["idle", "subagent"],
     },
     HookRemoval {
         event: "SessionEnd",
@@ -697,9 +703,10 @@ mod tests {
     /// The subagent groups as install appends them to a compact hooks object.
     fn subagent_properties(hook_path: &Path) -> String {
         format!(
-            ",\"SubagentStart\":[{}],\"SubagentStop\":[{}]",
+            ",\"SubagentStart\":[{}],\"SubagentStop\":[{}],\"Stop\":[{}]",
             owned_json(hook_path, "SubagentStart"),
             owned_json(hook_path, "SubagentStop"),
+            owned_json(hook_path, "Stop"),
         )
     }
 
@@ -810,7 +817,7 @@ mod tests {
         let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).unwrap();
         let subagent = serde_json::to_string(&hook_command(hook_path, Some("subagent"))).unwrap();
         let input = format!(
-            "{{\"hooks\":{{\"SubagentStop\":[{{\"hooks\":[{{\"command\":{subagent},\"timeout\":10,\"type\":\"command\"}}]}}],\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{SESSION_START_MATCHER}\"}}],\"SubagentStart\":[{{\"hooks\":[{{\"type\":\"command\",\"timeout\":10,\"command\":{subagent}}}]}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
+            "{{\"hooks\":{{\"SubagentStop\":[{{\"hooks\":[{{\"command\":{subagent},\"timeout\":10,\"type\":\"command\"}}]}}],\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{SESSION_START_MATCHER}\"}}],\"SubagentStart\":[{{\"hooks\":[{{\"type\":\"command\",\"timeout\":10,\"command\":{subagent}}}]}}],\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":{subagent},\"timeout\":10}}]}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
         );
 
         let updated = install(&input, settings_path, hook_path).unwrap();

@@ -41,8 +41,8 @@ hook_input_file = os.environ.get("HERDR_HOOK_INPUT_FILE")
 # these hooks are the only sign of them.
 SUBAGENT_TOKEN_PREFIX = "subagent-"
 SUBAGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,23}")
-# The token only outlives its subagent when a stop hook is lost; a new session
-# in the pane clears it sooner.
+# The token only outlives its subagent when no hook reports its end: the lead's
+# next Stop or a new session in the pane clears it sooner.
 SUBAGENT_TOKEN_TTL_MS = 86_400_000
 MAX_TOKENS_PER_REPORT = 16
 
@@ -134,11 +134,56 @@ def subagent_description(meta_path):
     return None
 
 
+def subagent_label(description, agent_type):
+    for value in (description, agent_type):
+        if isinstance(value, str) and value.strip():
+            return value
+    return "subagent"
+
+
+def reconcile_subagents(background_tasks):
+    """Make the pane's subagent tokens match the lead's running subagents.
+
+    A subagent that is killed rather than finishing gets no SubagentStop, so
+    its token would stay. The lead's Stop payload lists every background task
+    still running, and no foreground subagent can be running once the lead's
+    turn has ended, so at Stop that list is the whole truth.
+    """
+    if not isinstance(background_tasks, list):
+        return
+    running = {}
+    for task in background_tasks:
+        if not isinstance(task, dict) or task.get("type") != "subagent":
+            continue
+        if task.get("status") != "running":
+            continue
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not SUBAGENT_ID.fullmatch(task_id):
+            continue
+        running[SUBAGENT_TOKEN_PREFIX + task_id] = subagent_label(
+            task.get("description"), task.get("agent_type")
+        )
+    current = {
+        key: value
+        for key, value in pane_tokens().items()
+        if key.startswith(SUBAGENT_TOKEN_PREFIX)
+    }
+    finished = {key: None for key in current if key not in running}
+    if finished:
+        report_tokens(finished)
+    changed = {key: label for key, label in running.items() if current.get(key) != label}
+    if changed:
+        report_tokens(changed, SUBAGENT_TOKEN_TTL_MS)
+
+
 if "CURSOR_VERSION" in os.environ or "cursor_version" in hook_input:
     raise SystemExit(0)
 hook_event_name = str(hook_input.get("hook_event_name") or "")
 
 if action == "subagent":
+    if hook_event_name == "Stop":
+        reconcile_subagents(hook_input.get("background_tasks"))
+        raise SystemExit(0)
     if hook_event_name not in ("SubagentStart", "SubagentStop"):
         raise SystemExit(0)
     agent_id = hook_input.get("agent_id")
@@ -148,8 +193,7 @@ if action == "subagent":
     if hook_event_name == "SubagentStop":
         report_tokens({token: None})
         raise SystemExit(0)
-    agent_type = hook_input.get("agent_type")
-    label = agent_type if isinstance(agent_type, str) and agent_type else "subagent"
+    label = subagent_label(None, hook_input.get("agent_type"))
     report_tokens({token: label}, SUBAGENT_TOKEN_TTL_MS)
     transcript_path = hook_input.get("transcript_path")
     if not isinstance(transcript_path, str) or not transcript_path.endswith(".jsonl"):

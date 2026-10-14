@@ -111,7 +111,7 @@ herdr integration install claude
 
 The hook reports Claude Code session identity to the local Herdr socket on session start. Claude Code state comes from Herdr's screen manifest detection.
 
-Claude integration v11 also hooks `SubagentStart` and `SubagentStop`. Claude Code runs subagents inside the lead's process, so the hook reports each running subagent as a `subagent-<id>` pane metadata token, valued with the subagent's description (its agent type until the description is known), and clears it when the subagent stops. A new Claude session in the pane clears any left behind. The Projects tree lists them under their agent.
+Claude integration v11 also hooks `SubagentStart` and `SubagentStop`. Claude Code runs subagents inside the lead's process, so the hook reports each running subagent as a `subagent-<id>` pane metadata token, valued with the subagent's description (its agent type until the description is known), and clears it when the subagent stops. A killed subagent gets no stop hook, so the integration also hooks `Stop`: when the lead's turn ends, Claude lists the subagents still running, and the hook brings the pane's tokens into line with it. A new Claude session in the pane clears any left behind. The Projects tree lists them under their agent.
 
 Claude integration v10 matches only the documented `SessionStart` sources: `startup`, `resume`, `clear`, `compact`, and `fork`. This prevents Grok's `new` and `load` events from launching the imported Herdr Claude hook, without disabling unrelated Claude-compatible hooks. Reinstall the Claude integration after upgrading to migrate the previous wildcard matcher. New Claude source values require an integration update.
 
