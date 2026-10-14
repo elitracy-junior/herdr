@@ -18,6 +18,40 @@ use super::config_edit::{
 // `new`/`load`; filter before it starts an unnecessary hook process.
 const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 
+/// A hook group herdr owns in Claude's settings. Install writes each one in
+/// exactly this shape, and a group already in this shape is left where it is.
+struct OwnedHook {
+    event: &'static str,
+    matcher: Option<&'static str>,
+    action: &'static str,
+}
+
+/// Session identity, plus the subagents a session starts and finishes. Claude
+/// runs subagents inside the lead's process, so these hooks are the only sign
+/// of them; both subagent events share one action and the script tells them
+/// apart by `hook_event_name`.
+const OWNED_HOOKS: &[OwnedHook] = &[
+    OwnedHook {
+        event: "SessionStart",
+        matcher: Some(SESSION_START_MATCHER),
+        action: "session",
+    },
+    OwnedHook {
+        event: "SubagentStart",
+        matcher: None,
+        action: "subagent",
+    },
+    OwnedHook {
+        event: "SubagentStop",
+        matcher: None,
+        action: "subagent",
+    },
+];
+
+fn owned_hook(event: &str) -> Option<&'static OwnedHook> {
+    OWNED_HOOKS.iter().find(|owned| owned.event == event)
+}
+
 struct HookRemoval {
     event: &'static str,
     actions: &'static [&'static str],
@@ -33,8 +67,12 @@ const HOOK_REMOVALS: &[HookRemoval] = &[
         actions: &["working"],
     },
     HookRemoval {
+        event: "SubagentStart",
+        actions: &["subagent"],
+    },
+    HookRemoval {
         event: "SubagentStop",
-        actions: &["working"],
+        actions: &["working", "subagent"],
     },
     HookRemoval {
         event: "PermissionRequest",
@@ -71,15 +109,16 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
         "claude settings",
         "claude settings hooks",
     )?;
-    let canonical = canonical_hook_value(hook_path);
-    apply_value_removals(hooks, hook_path, Some(&canonical))?;
-    ensure_command_hook(
-        hooks,
-        "SessionStart",
-        hook_command(hook_path, Some("session")),
-        10,
-        Some(SESSION_START_MATCHER),
-    )?;
+    apply_value_removals(hooks, hook_path, EditKind::Install)?;
+    for owned in OWNED_HOOKS {
+        ensure_command_hook(
+            hooks,
+            owned.event,
+            hook_command(hook_path, Some(owned.action)),
+            10,
+            owned.matcher,
+        )?;
+    }
 
     if desired == original {
         return Ok(content.to_string());
@@ -109,7 +148,7 @@ pub(crate) fn uninstall(
         "claude settings",
         "claude settings hooks",
     )? {
-        removed = apply_value_removals(hooks, hook_path, None)?;
+        removed = apply_value_removals(hooks, hook_path, EditKind::Uninstall)?;
     }
 
     if !removed {
@@ -128,21 +167,23 @@ pub(crate) fn uninstall(
 fn apply_value_removals(
     hooks: &mut Map<String, Value>,
     hook_path: &Path,
-    canonical: Option<&Value>,
+    kind: EditKind,
 ) -> io::Result<bool> {
     let mut removed = false;
     for policy in HOOK_REMOVALS {
         let commands = removal_commands(policy, hook_path);
-        removed |= remove_value_event_commands(
-            hooks,
-            policy.event,
-            &commands,
-            (policy.event == "SessionStart")
-                .then_some(canonical)
-                .flatten(),
-        )?;
+        let canonical = kept_canonical(policy.event, hook_path, kind);
+        removed |= remove_value_event_commands(hooks, policy.event, &commands, canonical.as_ref())?;
     }
     Ok(removed)
+}
+
+/// The group an install keeps in place for `event`, if herdr owns one there.
+fn kept_canonical(event: &str, hook_path: &Path, kind: EditKind) -> Option<Value> {
+    (kind == EditKind::Install)
+        .then(|| owned_hook(event))
+        .flatten()
+        .map(|owned| canonical_hook_value(hook_path, owned))
 }
 
 fn remove_value_event_commands(
@@ -237,56 +278,83 @@ fn rewrite(
         None => return Ok(content.to_string()),
     };
 
-    let canonical = canonical_hook_value(hook_path);
-    let mut canonical_preserved = false;
+    let mut preserved = HashSet::new();
     for policy in HOOK_REMOVALS {
         let commands = removal_commands(policy, hook_path);
-        canonical_preserved |= remove_event_commands(
-            &hooks,
-            policy.event,
-            &commands,
-            kind == EditKind::Install,
-            &canonical,
-        )?;
-    }
-
-    if kind == EditKind::Install && !canonical_preserved {
-        match hooks.get("SessionStart") {
-            Some(property) => {
-                let session_start = property.array_value().ok_or_else(|| {
-                    io::Error::other("hook entries for SessionStart must be an array")
-                })?;
-                if direct_children_are_compact(&session_start.children()) {
-                    let updated =
-                        append_session_entry_compact(&root.to_string(), hook_path, settings_path)?;
-                    return verify_updated(updated, settings_path, desired);
-                }
-                session_start.append(canonical_hook_input(hook_path));
-            }
-            None if direct_children_are_compact(&hooks.children()) => {
-                let updated =
-                    append_session_property_compact(&root.to_string(), hook_path, settings_path)?;
-                return verify_updated(updated, settings_path, desired);
-            }
-            None => {
-                let session_start = hooks
-                    .append("SessionStart", CstInputValue::Array(Vec::new()))
-                    .array_value()
-                    .ok_or_else(|| io::Error::other("failed to create SessionStart hook array"))?;
-                session_start.append(canonical_hook_input(hook_path));
-            }
+        let canonical = kept_canonical(policy.event, hook_path, kind);
+        if remove_event_commands(&hooks, policy.event, &commands, canonical.as_ref())? {
+            preserved.insert(policy.event);
         }
     }
 
-    verify_updated(root.to_string(), settings_path, desired)
+    let mut updated = root.to_string();
+    if kind == EditKind::Install {
+        for owned in OWNED_HOOKS
+            .iter()
+            .filter(|owned| !preserved.contains(owned.event))
+        {
+            updated = append_owned_hook(&updated, hook_path, settings_path, owned)?;
+        }
+    }
+
+    verify_updated(updated, settings_path, desired)
+}
+
+/// Add one owned group to `content`, writing it compactly where the container
+/// it lands in is compact so the file keeps the shape it already had.
+fn append_owned_hook(
+    content: &str,
+    hook_path: &Path,
+    settings_path: &Path,
+    owned: &OwnedHook,
+) -> io::Result<String> {
+    let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
+        io::Error::other(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    let hooks = root
+        .object_value()
+        .and_then(|root| root.get("hooks"))
+        .and_then(|property| property.object_value())
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "claude settings hooks at {} must be a JSON object",
+                settings_path.display()
+            ))
+        })?;
+    match hooks.get(owned.event) {
+        Some(property) => {
+            let entries = property.array_value().ok_or_else(|| {
+                io::Error::other(format!("hook entries for {} must be an array", owned.event))
+            })?;
+            if direct_children_are_compact(&entries.children()) {
+                return append_owned_entry_compact(content, hook_path, settings_path, owned);
+            }
+            entries.append(canonical_hook_input(hook_path, owned));
+        }
+        None if direct_children_are_compact(&hooks.children()) => {
+            return append_owned_property_compact(content, hook_path, settings_path, owned);
+        }
+        None => {
+            hooks
+                .append(owned.event, CstInputValue::Array(Vec::new()))
+                .array_value()
+                .ok_or_else(|| {
+                    io::Error::other(format!("failed to create {} hook array", owned.event))
+                })?
+                .append(canonical_hook_input(hook_path, owned));
+        }
+    }
+    Ok(root.to_string())
 }
 
 fn remove_event_commands(
     hooks: &CstObject,
     event: &str,
     commands: &[String],
-    installing: bool,
-    canonical: &Value,
+    canonical: Option<&Value>,
 ) -> io::Result<bool> {
     let Some(event_property) = hooks.get(event) else {
         return Ok(false);
@@ -297,10 +365,8 @@ fn remove_event_commands(
     let mut canonical_preserved = false;
 
     for entry in entries.elements() {
-        if installing
-            && event == "SessionStart"
-            && !canonical_preserved
-            && entry.to_serde_value().as_ref() == Some(canonical)
+        if !canonical_preserved
+            && canonical.is_some_and(|canonical| entry.to_serde_value().as_ref() == Some(canonical))
         {
             canonical_preserved = true;
             continue;
@@ -332,7 +398,9 @@ fn remove_event_commands(
         }
     }
 
-    if entries.elements().is_empty() && !(installing && event == "SessionStart") {
+    // An event herdr is about to write into keeps its array, even emptied, so
+    // the group lands where the event already sits.
+    if entries.elements().is_empty() && canonical.is_none() {
         event_property.remove();
     }
 
@@ -347,43 +415,66 @@ fn removal_commands(policy: &HookRemoval, hook_path: &Path) -> Vec<String> {
         .collect()
 }
 
-fn canonical_hook_value(hook_path: &Path) -> Value {
-    serde_json_value!({
-        "matcher": SESSION_START_MATCHER,
-        "hooks": [{
+fn canonical_hook_value(hook_path: &Path, owned: &OwnedHook) -> Value {
+    let mut entry = Map::new();
+    if let Some(matcher) = owned.matcher {
+        entry.insert("matcher".to_string(), Value::String(matcher.to_string()));
+    }
+    entry.insert(
+        "hooks".to_string(),
+        serde_json_value!([{
             "type": "command",
-            "command": hook_command(hook_path, Some("session")),
+            "command": hook_command(hook_path, Some(owned.action)),
             "timeout": 10,
-        }],
-    })
+        }]),
+    );
+    Value::Object(entry)
 }
 
-fn canonical_hook_input(hook_path: &Path) -> CstInputValue {
-    let command = hook_command(hook_path, Some("session"));
-    json!({
-        matcher: SESSION_START_MATCHER,
-        hooks: [{
-            "type": "command",
-            command: command,
-            timeout: 10u64,
-        }],
-    })
+fn canonical_hook_input(hook_path: &Path, owned: &OwnedHook) -> CstInputValue {
+    let command = hook_command(hook_path, Some(owned.action));
+    let hooks = json!([{
+        "type": "command",
+        command: command,
+        timeout: 10u64,
+    }]);
+    let mut entry = Vec::with_capacity(2);
+    if let Some(matcher) = owned.matcher {
+        entry.push((
+            "matcher".to_string(),
+            CstInputValue::String(matcher.to_string()),
+        ));
+    }
+    entry.push(("hooks".to_string(), hooks));
+    CstInputValue::Object(entry)
 }
 
+/// Settings with no `hooks` object yet get one holding every owned group.
 fn append_hooks_property_compact(
     content: &str,
     hook_path: &Path,
     settings_path: &Path,
 ) -> io::Result<String> {
     let root = parse_ast_root_object(content, settings_path)?;
-    let value = format!("{{\"SessionStart\":[{}]}}", canonical_hook_json(hook_path)?);
+    let properties = OWNED_HOOKS
+        .iter()
+        .map(|owned| {
+            Ok(format!(
+                "\"{}\":[{}]",
+                owned.event,
+                canonical_hook_json(hook_path, owned)?
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let value = format!("{{{}}}", properties.join(","));
     Ok(append_object_property(content, &root, "hooks", &value))
 }
 
-fn append_session_property_compact(
+fn append_owned_property_compact(
     content: &str,
     hook_path: &Path,
     settings_path: &Path,
+    owned: &OwnedHook,
 ) -> io::Result<String> {
     let root = parse_ast_root_object(content, settings_path)?;
     let hooks = root.get_object("hooks").ok_or_else(|| {
@@ -392,29 +483,27 @@ fn append_session_property_compact(
             settings_path.display()
         ))
     })?;
-    let value = format!("[{}]", canonical_hook_json(hook_path)?);
-    Ok(append_object_property(
-        content,
-        hooks,
-        "SessionStart",
-        &value,
-    ))
+    let value = format!("[{}]", canonical_hook_json(hook_path, owned)?);
+    Ok(append_object_property(content, hooks, owned.event, &value))
 }
 
-fn append_session_entry_compact(
+fn append_owned_entry_compact(
     content: &str,
     hook_path: &Path,
     settings_path: &Path,
+    owned: &OwnedHook,
 ) -> io::Result<String> {
     let root = parse_ast_root_object(content, settings_path)?;
-    let session_start = root
+    let entries = root
         .get_object("hooks")
-        .and_then(|hooks| hooks.get_array("SessionStart"))
-        .ok_or_else(|| io::Error::other("hook entries for SessionStart must be an array"))?;
+        .and_then(|hooks| hooks.get_array(owned.event))
+        .ok_or_else(|| {
+            io::Error::other(format!("hook entries for {} must be an array", owned.event))
+        })?;
     Ok(append_array_element(
         content,
-        session_start,
-        &canonical_hook_json(hook_path)?,
+        entries,
+        &canonical_hook_json(hook_path, owned)?,
     ))
 }
 
@@ -516,10 +605,14 @@ fn append_to_container(
     updated
 }
 
-fn canonical_hook_json(hook_path: &Path) -> io::Result<String> {
-    let command = serde_json::to_string(&hook_command(hook_path, Some("session")))?;
+fn canonical_hook_json(hook_path: &Path, owned: &OwnedHook) -> io::Result<String> {
+    let command = serde_json::to_string(&hook_command(hook_path, Some(owned.action)))?;
+    let matcher = match owned.matcher {
+        Some(matcher) => format!("\"matcher\":{},", serde_json::to_string(matcher)?),
+        None => String::new(),
+    };
     Ok(format!(
-        "{{\"matcher\":\"{SESSION_START_MATCHER}\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}}]}}"
+        "{{{matcher}\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}}]}}"
     ))
 }
 
@@ -597,6 +690,19 @@ mod tests {
         )
     }
 
+    fn owned_json(hook_path: &Path, event: &str) -> String {
+        canonical_hook_json(hook_path, owned_hook(event).unwrap()).unwrap()
+    }
+
+    /// The subagent groups as install appends them to a compact hooks object.
+    fn subagent_properties(hook_path: &Path) -> String {
+        format!(
+            ",\"SubagentStart\":[{}],\"SubagentStop\":[{}]",
+            owned_json(hook_path, "SubagentStart"),
+            owned_json(hook_path, "SubagentStop"),
+        )
+    }
+
     #[test]
     fn install_preserves_untouched_formatting_and_complete_trailing_suffix() {
         let (settings_path, hook_path) = paths();
@@ -634,42 +740,43 @@ mod tests {
     #[test]
     fn install_keeps_compact_containers_compact() {
         let (settings_path, hook_path) = paths();
-        let canonical = canonical_hook_json(hook_path).unwrap();
+        let canonical = owned_json(hook_path, "SessionStart");
+        let subagents = subagent_properties(hook_path);
         let cases = [
             (
                 "{\"zeta\":{\"escaped\":\"\\u0061\",\"n\":1e+02},\"alpha\":1}\r\n",
                 format!(
-                    "{{\"zeta\":{{\"escaped\":\"\\u0061\",\"n\":1e+02}},\"alpha\":1,\"hooks\":{{\"SessionStart\":[{canonical}]}}}}\r\n"
+                    "{{\"zeta\":{{\"escaped\":\"\\u0061\",\"n\":1e+02}},\"alpha\":1,\"hooks\":{{\"SessionStart\":[{canonical}]{subagents}}}}}\r\n"
                 ),
             ),
             (
                 "{\"hooks\":{\"Notification\":[{\"matcher\":\"keep\",\"hooks\":[]}]}, \"alpha\":1}",
                 format!(
-                    "{{\"hooks\":{{\"Notification\":[{{\"matcher\":\"keep\",\"hooks\":[]}}],\"SessionStart\":[{canonical}]}}, \"alpha\":1}}"
+                    "{{\"hooks\":{{\"Notification\":[{{\"matcher\":\"keep\",\"hooks\":[]}}],\"SessionStart\":[{canonical}]{subagents}}}, \"alpha\":1}}"
                 ),
             ),
             (
                 "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"keep\",\"hooks\":[{\"type\":\"command\",\"command\":\"echo keep\"}]}]}}",
                 format!(
-                    "{{\"hooks\":{{\"SessionStart\":[{{\"matcher\":\"keep\",\"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]}},{canonical}]}}}}"
+                    "{{\"hooks\":{{\"SessionStart\":[{{\"matcher\":\"keep\",\"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]}},{canonical}]{subagents}}}}}"
                 ),
             ),
             (
                 "{\"zeta\":{\n  \"x\":1\n},\"alpha\":1}",
                 format!(
-                    "{{\"zeta\":{{\n  \"x\":1\n}},\"alpha\":1,\"hooks\":{{\"SessionStart\":[{canonical}]}}}}"
+                    "{{\"zeta\":{{\n  \"x\":1\n}},\"alpha\":1,\"hooks\":{{\"SessionStart\":[{canonical}]{subagents}}}}}"
                 ),
             ),
             (
                 "{\"hooks\":{\"Notification\":[\n  {\"matcher\":\"keep\",\"hooks\":[]}\n]},\"alpha\":1}",
                 format!(
-                    "{{\"hooks\":{{\"Notification\":[\n  {{\"matcher\":\"keep\",\"hooks\":[]}}\n],\"SessionStart\":[{canonical}]}},\"alpha\":1}}"
+                    "{{\"hooks\":{{\"Notification\":[\n  {{\"matcher\":\"keep\",\"hooks\":[]}}\n],\"SessionStart\":[{canonical}]{subagents}}},\"alpha\":1}}"
                 ),
             ),
             (
                 "{\"hooks\":{\"SessionStart\":[{\n  \"matcher\":\"keep\",\n  \"hooks\":[{\"type\":\"command\",\"command\":\"echo keep\"}]\n}]}}",
                 format!(
-                    "{{\"hooks\":{{\"SessionStart\":[{{\n  \"matcher\":\"keep\",\n  \"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]\n}},{canonical}]}}}}"
+                    "{{\"hooks\":{{\"SessionStart\":[{{\n  \"matcher\":\"keep\",\n  \"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]\n}},{canonical}]{subagents}}}}}"
                 ),
             ),
         ];
@@ -701,8 +808,9 @@ mod tests {
     fn install_is_a_byte_exact_noop_for_a_canonical_hook() {
         let (settings_path, hook_path) = paths();
         let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).unwrap();
+        let subagent = serde_json::to_string(&hook_command(hook_path, Some("subagent"))).unwrap();
         let input = format!(
-            "{{\"hooks\":{{\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{SESSION_START_MATCHER}\"}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
+            "{{\"hooks\":{{\"SubagentStop\":[{{\"hooks\":[{{\"command\":{subagent},\"timeout\":10,\"type\":\"command\"}}]}}],\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{SESSION_START_MATCHER}\"}}],\"SubagentStart\":[{{\"hooks\":[{{\"type\":\"command\",\"timeout\":10,\"command\":{subagent}}}]}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
         );
 
         let updated = install(&input, settings_path, hook_path).unwrap();
@@ -727,7 +835,10 @@ mod tests {
         assert_eq!(groups[0]["matcher"], "*");
         assert_eq!(groups[0]["hooks"].as_array().unwrap().len(), 1);
         assert_eq!(groups[0]["hooks"][0]["command"], "echo keep");
-        assert_eq!(groups[1], canonical_hook_value(hook_path));
+        assert_eq!(
+            groups[1],
+            canonical_hook_value(hook_path, owned_hook("SessionStart").unwrap())
+        );
         assert_eq!(
             install(&installed, settings_path, hook_path).unwrap(),
             installed
@@ -746,7 +857,7 @@ mod tests {
     #[test]
     fn install_preserves_canonical_session_start_position_during_migration() {
         let (settings_path, hook_path) = paths();
-        let canonical = canonical_hook_json(hook_path).unwrap();
+        let canonical = owned_json(hook_path, "SessionStart");
         let old_command = serde_json::to_string(&hook_command(hook_path, Some("working"))).unwrap();
         let session_start = format!(
             "\"SessionStart\":[{canonical},{{\"matcher\":\"foreign\",\"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]}}]"
@@ -758,7 +869,13 @@ mod tests {
         ]
         .concat();
         let input = ["{\"hooks\":{", &session_start, ",", &old_event, "}}"].concat();
-        let expected = ["{\"hooks\":{", &session_start, "}}"].concat();
+        let expected = [
+            "{\"hooks\":{",
+            &session_start,
+            &subagent_properties(hook_path),
+            "}}",
+        ]
+        .concat();
 
         let updated = install(&input, settings_path, hook_path).unwrap();
 
@@ -833,6 +950,47 @@ mod tests {
             .contains("                {  \"type\" : \"command\", \"command\" : \"echo keep\"  }"));
         assert!(updated.starts_with("{\n    \"before\" : \"\\u0061\","));
         assert!(updated.ends_with("    \"after\" : 1e+02\n}\n\n"));
+    }
+
+    #[test]
+    fn subagent_groups_install_beside_user_hooks_and_uninstall_cleanly() {
+        let (settings_path, hook_path) = paths();
+        let input = concat!(
+            "{\n",
+            "  \"hooks\": {\n",
+            "    \"SubagentStop\": [\n",
+            "      {\"hooks\": [{\"type\": \"command\", \"command\": \"echo keep\"}]}\n",
+            "    ]\n",
+            "  }\n",
+            "}\n",
+        );
+
+        let installed = install(input, settings_path, hook_path).unwrap();
+        let settings: Value = serde_json::from_str(&installed).unwrap();
+        assert_eq!(
+            settings["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
+            "echo keep"
+        );
+        for (event, index) in [("SubagentStart", 0), ("SubagentStop", 1)] {
+            assert_eq!(
+                settings["hooks"][event][index],
+                canonical_hook_value(hook_path, owned_hook(event).unwrap())
+            );
+        }
+        assert!(
+            installed.contains("\n    \"SubagentStart\": ["),
+            "{installed}"
+        );
+        assert_eq!(
+            install(&installed, settings_path, hook_path).unwrap(),
+            installed
+        );
+
+        let removed = uninstall(&installed, settings_path, hook_path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&removed).unwrap(),
+            serde_json::from_str::<Value>(input).unwrap()
+        );
     }
 
     #[test]

@@ -27,6 +27,9 @@ pub(super) enum ProjectRow {
     },
     /// One agent inside that workspace.
     Agent(Box<AgentRow>),
+    /// A subagent the agent above is running. `pane_id` is the lead's pane:
+    /// a subagent has no pane of its own, so that is where a click goes.
+    Subagent { pane_id: String, label: String },
     /// What the workspace above is busy doing, while it is busy doing it:
     /// a worktree being made, a checkout being torn down. Reported as workspace
     /// metadata by whatever is doing the work.
@@ -56,6 +59,30 @@ pub(super) const AGENT_INDENT: u16 = 8;
 /// herdr uses elsewhere are missing from common terminal fonts and fall back to
 /// a different face -- which visibly changes size as a row is highlighted.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Pane metadata tokens naming a running subagent, one per subagent:
+/// `subagent-<id>` = what it was asked to do. Agent integrations report them
+/// from the agent's own subagent hooks -- Claude Code runs subagents inside the
+/// lead's process, so nothing about the pane shows them otherwise.
+const SUBAGENT_TOKEN_PREFIX: &str = "subagent-";
+
+/// Indent of a subagent past the agent that runs it.
+const SUBAGENT_INDENT: u16 = AGENT_INDENT + 2;
+
+/// What each of an agent's running subagents is doing, in token order.
+fn subagent_labels(agent: &crate::protocol::ClientShellAgent) -> impl Iterator<Item = &str> {
+    agent
+        .tokens
+        .iter()
+        .filter(|(token, value)| token.starts_with(SUBAGENT_TOKEN_PREFIX) && !value.is_empty())
+        .map(|(_, value)| value.as_str())
+}
+
+/// Whether an agent has a subagent running, which keeps the spinner going even
+/// when the lead itself has gone idle.
+pub(super) fn has_subagents(agent: &crate::protocol::ClientShellAgent) -> bool {
+    subagent_labels(agent).next().is_some()
+}
 
 /// Marks a pane with no agent in it.
 const PANE_GLYPH: &str = "\u{25aa}";
@@ -200,6 +227,7 @@ impl ProjectRow {
                 .unwrap_or(1),
             Self::AgentFold { .. } => 1,
             Self::Agent(row) => row.rows.len(),
+            Self::Subagent { .. } => 1,
             Self::Pane { .. } => 1,
             Self::Status { .. } => 1,
         };
@@ -375,6 +403,16 @@ pub(super) fn project_rows(
             if let Some(row) = agent_row_with(snapshot, pane_id, None, &nested) {
                 rows.push(ProjectRow::Agent(Box::new(row)));
             }
+            if let Some(agent) = snapshot
+                .agents
+                .iter()
+                .find(|agent| &agent.pane_id == pane_id)
+            {
+                rows.extend(subagent_labels(agent).map(|label| ProjectRow::Subagent {
+                    pane_id: pane_id.clone(),
+                    label: label.to_owned(),
+                }));
+            }
         }
         push_plain_panes(
             &mut rows,
@@ -465,6 +503,25 @@ pub(super) fn render_nested_agent(
             buffer,
         );
     }
+}
+
+/// Draw one subagent under the agent running it. It only exists while it is
+/// working, so it always spins.
+pub(super) fn render_subagent(
+    buffer: &mut Buffer,
+    rect: Rect,
+    label: &str,
+    frame: usize,
+    palette: &Palette,
+) {
+    put_text(
+        buffer,
+        rect.x.saturating_add(SUBAGENT_INDENT),
+        rect.y,
+        rect.width.saturating_sub(SUBAGENT_INDENT),
+        &format!("{} {label}", SPINNER[frame % SPINNER.len()]),
+        Style::default().fg(palette.overlay0),
+    );
 }
 
 /// Draw one pane nested under its Space: what it is running, or just the pane
@@ -590,6 +647,7 @@ mod tests {
                 ProjectRow::Workspace(_) => "workspace",
                 ProjectRow::AgentFold { .. } => "fold",
                 ProjectRow::Agent(_) => "agent",
+                ProjectRow::Subagent { .. } => "subagent",
                 ProjectRow::Pane { .. } => "pane",
                 ProjectRow::Status { .. } => "status",
             })
@@ -1054,5 +1112,84 @@ mod tests {
             true,
         );
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
+    }
+
+    fn agent_running(pane_id: &str, subagents: &[(&str, &str)]) -> ClientShellAgent {
+        let mut agent = agent(pane_id, "ws_1");
+        agent.tokens = subagents
+            .iter()
+            .map(|(token, value)| (token.to_string(), value.to_string()))
+            .collect();
+        agent
+    }
+
+    #[test]
+    fn subagents_nest_under_the_agent_running_them() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = vec![
+            agent_running(
+                "pane_1",
+                &[
+                    ("subagent-a1", "Find auth code"),
+                    ("subagent-b2", "Explore"),
+                    ("summary", "not a subagent"),
+                ],
+            ),
+            agent("pane_2", "ws_1"),
+        ];
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+
+        assert_eq!(
+            kinds(&rows),
+            [
+                "workspace",
+                "fold",
+                "agent",
+                "subagent",
+                "subagent",
+                "agent"
+            ]
+        );
+        let subagents = rows
+            .iter()
+            .filter_map(|row| match row {
+                ProjectRow::Subagent { pane_id, label } => Some((pane_id.as_str(), label.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            subagents,
+            [("pane_1", "Find auth code"), ("pane_1", "Explore")]
+        );
+        assert!(has_subagents(&snapshot.agents[0]));
+        assert!(!has_subagents(&snapshot.agents[1]));
+    }
+
+    #[test]
+    fn a_collapsed_fold_hides_subagents_with_their_agents() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.agents = vec![
+            agent_running("pane_1", &[("subagent-a1", "Find auth code")]),
+            agent("pane_2", "ws_1"),
+        ];
+        let rows = project_rows(
+            &snapshot,
+            &config(),
+            &HashSet::new(),
+            &HashSet::from(["ws_1".to_string()]),
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
+
+        assert_eq!(kinds(&rows), ["workspace", "fold"]);
     }
 }

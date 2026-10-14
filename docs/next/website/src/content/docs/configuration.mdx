@@ -456,7 +456,7 @@ projects = true
    main
 ```
 
-Each Space lists the agents running in it. A Space with several gets an `N agents` fold -- click it to collapse or expand, and the state is remembered per Space; a Space with one shows it directly, since a fold would be taller than the row it hides. Click an agent to focus its pane.
+Each Space lists the agents running in it, and each agent lists the subagents it is running, one spinning row each, from the `subagent-<id>` pane tokens the Claude Code integration reports. A subagent row goes when the subagent finishes; clicking it focuses the lead's pane. A Space with several agents gets an `N agents` fold -- click it to collapse or expand, and the state is remembered per Space; a Space with one shows it directly, since a fold would be taller than the row it hides. Click an agent to focus its pane.
 
 Nested agents use `ui.sidebar.agents.nested_rows`, which defaults to one compact line: the agent mark and the agent's name. It deliberately omits the `workspace` token that `ui.sidebar.agents.rows` starts with, because the Space is already the line above, and stays short because the tree indents it twice. Add `terminal_title_stripped` or a `$name` token if you want more on the line.
 

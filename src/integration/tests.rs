@@ -967,12 +967,18 @@ fn install_claude_writes_hook_and_updates_settings() {
         .as_str()
         .unwrap()
         .contains(" session"));
+    for event in ["SubagentStart", "SubagentStop"] {
+        assert!(settings["hooks"][event][0].get("matcher").is_none());
+        assert!(settings["hooks"][event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with(" subagent"));
+    }
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
@@ -1015,16 +1021,14 @@ fn install_claude_is_idempotent_for_hook_entries() {
     let settings: Value =
         serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        settings["hooks"]["SessionStart"].as_array().unwrap().len(),
-        1
-    );
+    for event in ["SessionStart", "SubagentStart", "SubagentStop"] {
+        assert_eq!(settings["hooks"][event].as_array().unwrap().len(), 1);
+    }
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
@@ -1098,6 +1102,17 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
         "echo keep-subagent"
     );
     assert_eq!(
+        settings["hooks"]["SubagentStop"][0]["hooks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(settings["hooks"]["SubagentStop"][1]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" subagent"));
+    assert_eq!(
         settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"],
         "echo keep-session-end"
     );
@@ -1110,7 +1125,7 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
 }
 
 #[test]
-fn claude_v9_integration_status_is_outdated_until_reinstalled() {
+fn claude_v10_integration_status_is_outdated_until_reinstalled() {
     let _lock = integration_env_lock();
     let base = unique_base();
     let home = base.join("home");
@@ -1119,7 +1134,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
     let hook_path = claude_hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
     fs::write(
         &hook_path,
-        "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=9\n",
+        "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=10\n",
     )
     .unwrap();
     std::env::set_var("HOME", &home);
@@ -1131,8 +1146,8 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         .unwrap();
 
     assert_eq!(claude.path, hook_path);
-    assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.installed_version, Some(10));
+    assert_eq!(claude.expected_version, 11);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1141,7 +1156,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(10));
+    assert_eq!(status.installed_version, Some(11));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1171,7 +1186,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.expected_version, CLAUDE_INTEGRATION_VERSION);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
@@ -1213,10 +1228,17 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
             }],
-            "SubagentStop": [{
-                "matcher": "*",
-                "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
-            }],
+            "SubagentStart": [
+                {"hooks": [{"type": "command", "command": format!("bash '{}' subagent", hook_path.display()), "timeout": 10}]},
+                {"hooks": [{"type": "command", "command": "echo keep-subagent", "timeout": 10}]}
+            ],
+            "SubagentStop": [
+                {
+                    "matcher": "*",
+                    "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
+                },
+                {"hooks": [{"type": "command", "command": format!("bash '{}' subagent", hook_path.display()), "timeout": 10}]}
+            ],
             "Stop": [{
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": format!("bash '{}' idle", hook_path.display()), "timeout": 10}]
@@ -1257,6 +1279,10 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
+    assert_eq!(
+        settings["hooks"]["SubagentStart"],
+        serde_json::json!([{"hooks": [{"type": "command", "command": "echo keep-subagent", "timeout": 10}]}])
+    );
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());

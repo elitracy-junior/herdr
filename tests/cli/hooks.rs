@@ -138,6 +138,50 @@ fn claude_hook_ignores_subagent_completion_reports() {
 }
 
 #[test]
+fn claude_hook_reports_a_starting_subagent_as_a_pane_token() {
+    let request = run_claude_hook(
+        "subagent",
+        r#"{"hook_event_name":"SubagentStart","agent_id":"a2b473f65a75d2b2c","agent_type":"Explore"}"#,
+    )
+    .expect("subagent start should report a token");
+
+    assert_eq!(request["method"], "pane.report_metadata");
+    assert_eq!(request["params"]["source"], "herdr:claude");
+    assert_eq!(
+        request["params"]["tokens"],
+        serde_json::json!({"subagent-a2b473f65a75d2b2c": "Explore"})
+    );
+    assert_eq!(request["params"]["ttl_ms"], 86_400_000);
+}
+
+#[test]
+fn claude_hook_clears_a_finished_subagent_token() {
+    let request = run_claude_hook(
+        "subagent",
+        r#"{"hook_event_name":"SubagentStop","agent_id":"a2b473f65a75d2b2c","agent_type":"Explore"}"#,
+    )
+    .expect("subagent stop should clear its token");
+
+    assert_eq!(request["method"], "pane.report_metadata");
+    assert_eq!(
+        request["params"]["tokens"],
+        serde_json::json!({"subagent-a2b473f65a75d2b2c": null})
+    );
+}
+
+#[test]
+fn claude_hook_ignores_subagent_reports_it_cannot_key() {
+    for input in [
+        r#"{"hook_event_name":"SubagentStart","agent_id":"../a","agent_type":"Explore"}"#,
+        r#"{"hook_event_name":"SubagentStart","agent_id":"a234567890123456789012345","agent_type":"Explore"}"#,
+        r#"{"hook_event_name":"SubagentStart","agent_type":"Explore"}"#,
+        r#"{"hook_event_name":"SessionStart","agent_id":"a2b473f65a75d2b2c","session_id":"s"}"#,
+    ] {
+        assert!(run_claude_hook("subagent", input).is_none(), "{input}");
+    }
+}
+
+#[test]
 fn claude_hook_keeps_parent_agent_type_only_blocked() {
     let request = run_claude_hook(
         "blocked",

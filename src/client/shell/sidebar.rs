@@ -427,6 +427,16 @@ pub(crate) fn render_sidebar(
                 );
                 hits.agents.push((rect, row.pane_id.clone()));
             }
+            super::projects::ProjectRow::Subagent { pane_id, label } => {
+                super::projects::render_subagent(
+                    buffer,
+                    rect,
+                    label,
+                    state.agent_animation_frame,
+                    palette,
+                );
+                hits.agents.push((rect, pane_id.clone()));
+            }
         }
         let gap = entries.get(entry_position + 1).map_or(0, |next| {
             if projects {
