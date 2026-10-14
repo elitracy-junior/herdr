@@ -108,7 +108,18 @@ impl ClientShellState {
             let Some(snapshot) = endpoint.snapshot.as_deref() else {
                 continue;
             };
-            let entries = if self.sidebar_collapsed && !mobile && surface_available {
+            let entries = if self.sidebar_collapsed
+                && !mobile
+                && surface_available
+                && !self.multi_endpoint_active()
+            {
+                // The single-machine collapsed sidebar lists what the keys step.
+                super::sidebar::stepped_workspace_entries(
+                    snapshot,
+                    &empty_collapsed_groups,
+                    self.config.projects_sidebar,
+                )
+            } else if self.sidebar_collapsed && !mobile && surface_available {
                 snapshot
                     .workspaces
                     .iter()

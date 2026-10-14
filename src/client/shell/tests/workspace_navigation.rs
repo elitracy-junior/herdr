@@ -367,9 +367,40 @@ fn single_machine_compact_navigation_includes_visible_collapsed_group_children()
     state.compose(100, 28).unwrap();
     workspace_rect(&state, &ClientEndpointId::Local, "ws_3");
     enter_navigation(&mut state);
-    for id in ["ws_2", "ws_3"] {
+    for id in ["ws_3", "ws_2"] {
         preview_key(&mut state, b"\x1b[B");
         assert_selected(&state, &ClientEndpointId::Local, id);
+    }
+}
+
+#[test]
+fn the_collapsed_sidebar_lists_exactly_what_the_workspace_keys_step_through() {
+    for (projects, expected) in [
+        (false, ["ws_1", "ws_3", "ws_2"].as_slice()),
+        (true, &["ws_3", "ws_2"]),
+    ] {
+        let (mut state, _) = navigation_state(grouped_workspaces());
+        state.set_endpoint_catalog(&[]);
+        state.config.projects_sidebar = projects;
+        // Collapsed in the expanded sidebar; the collapsed one cannot reopen it.
+        state.toggle_collapsed_group(&ClientEndpointId::Local, "repo".into());
+        state.sidebar_collapsed = true;
+        state.compose(100, 28).unwrap();
+
+        let listed = state
+            .hits
+            .workspaces
+            .iter()
+            .map(|hit| hit.workspace_id.as_str())
+            .collect::<Vec<_>>();
+        let snapshot = state.snapshot.as_deref().unwrap();
+        let stepped = state
+            .navigation_workspace_entries(snapshot)
+            .iter()
+            .map(|entry| snapshot.workspaces[entry.index].workspace_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(listed, expected, "projects: {projects}");
+        assert_eq!(stepped, expected, "projects: {projects}");
     }
 }
 

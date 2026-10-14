@@ -57,9 +57,12 @@ pub(crate) fn render_collapsed_sidebar(
     let active_background = workspace_active_background(palette, selected_workspace_id.is_some());
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
-    for (index, workspace) in snapshot
-        .workspaces
+    // The keys' own list, so each number is the space its number key focuses.
+    // Nothing here can reopen a collapsed group, so none is collapsed.
+    let stepped = stepped_workspace_entries(snapshot, &HashSet::new(), config.projects_sidebar);
+    for (index, workspace) in stepped
         .iter()
+        .filter_map(|entry| snapshot.workspaces.get(entry.index))
         .take(workspace_area.height as usize)
         .enumerate()
     {
@@ -548,6 +551,39 @@ pub(crate) fn render_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// The spaces previous/next-workspace step through, in order, and that the
+/// workspace number keys index. The collapsed sidebar lists exactly these, so
+/// what it shows is what the keys reach.
+pub(crate) fn stepped_workspace_entries(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+    projects_sidebar: bool,
+) -> Vec<WorkspaceEntry> {
+    let entries = workspace_entries(snapshot, collapsed_groups);
+    if !projects_sidebar {
+        return entries;
+    }
+    // In the Projects tree a repo parent is a heading for the worktrees
+    // under it, so stepping through spaces should pass over it. It stays
+    // clickable, and stays reachable when it is the only space it has.
+    let stepped = entries
+        .iter()
+        .copied()
+        .filter(|entry| {
+            snapshot
+                .workspaces
+                .get(entry.index)
+                .and_then(|workspace| workspace.worktree.as_ref())
+                .is_none_or(|worktree| worktree.is_linked_worktree)
+        })
+        .collect::<Vec<_>>();
+    if stepped.is_empty() {
+        entries
+    } else {
+        stepped
+    }
 }
 
 pub(crate) fn workspace_entries(

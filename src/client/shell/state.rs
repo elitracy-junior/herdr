@@ -1214,37 +1214,18 @@ impl ClientShellState {
         snapshot: &ClientShellSnapshot,
     ) -> Vec<WorkspaceEntry> {
         let empty_collapsed_groups = HashSet::new();
-        let entries = if self.mobile_layout_active() {
-            render::workspace_entries(snapshot, &empty_collapsed_groups)
+        // Neither layout can reopen a collapsed group, so there it hides nothing.
+        let collapsed_groups = if self.mobile_layout_active() || self.sidebar_collapsed {
+            &empty_collapsed_groups
         } else {
-            render::workspace_entries(
-                snapshot,
-                self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups),
-            )
+            self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
+                .unwrap_or(&empty_collapsed_groups)
         };
-        if !self.config.projects_sidebar {
-            return entries;
-        }
-        // In the Projects tree a repo parent is a heading for the worktrees
-        // under it, so stepping through spaces should pass over it. It stays
-        // clickable, and stays reachable when it is the only space it has.
-        let stepped = entries
-            .iter()
-            .copied()
-            .filter(|entry| {
-                snapshot
-                    .workspaces
-                    .get(entry.index)
-                    .and_then(|workspace| workspace.worktree.as_ref())
-                    .is_none_or(|worktree| worktree.is_linked_worktree)
-            })
-            .collect::<Vec<_>>();
-        if stepped.is_empty() {
-            entries
-        } else {
-            stepped
-        }
+        super::sidebar::stepped_workspace_entries(
+            snapshot,
+            collapsed_groups,
+            self.config.projects_sidebar,
+        )
     }
 
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
