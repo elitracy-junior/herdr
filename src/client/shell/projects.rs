@@ -181,19 +181,29 @@ pub(crate) const PANE_PROCESS_INTERVAL: std::time::Duration =
 pub(crate) const AGENT_ANIMATION_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(120);
 
+/// The colour an agent is known by in the tree, if it has one: Claude is
+/// orange, so its rows stand out from the grey around them at a glance.
+fn agent_colour(
+    agent: Option<crate::detect::Agent>,
+    palette: &Palette,
+) -> Option<ratatui::style::Color> {
+    matches!(agent, Some(crate::detect::Agent::Claude)).then_some(palette.peach)
+}
+
 /// Glyph and colour for an agent in the tree: the agent mark normally, a
 /// spinner while it works, a check when it finishes.
 ///
-/// Only the states worth reacting to carry colour. An agent that is merely
-/// present or busy stays grey -- the spinner's motion already says it is busy,
-/// and a column of coloured marks reads as alarm when nothing is wrong.
+/// A finished or blocked agent takes that state's colour, since those are the
+/// states worth reacting to. Otherwise the mark is the agent's own colour, or
+/// grey for one without -- the spinner's motion already says it is busy.
 pub(super) fn agent_icon(
+    agent: Option<crate::detect::Agent>,
     status: crate::api::schema::AgentStatus,
     frame: usize,
     palette: &Palette,
 ) -> (&'static str, Style) {
     use crate::api::schema::AgentStatus;
-    let quiet = Style::default().fg(palette.overlay0);
+    let quiet = Style::default().fg(agent_colour(agent, palette).unwrap_or(palette.overlay0));
     match status {
         AgentStatus::Working => (SPINNER[frame % SPINNER.len()], quiet),
         AgentStatus::Done => (
@@ -474,12 +484,13 @@ pub(super) fn render_nested_agent(
     if row.focused {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let icon = agent_icon(row.status, frame, palette);
-    let name_style = Style::default().fg(if row.focused {
-        palette.text
-    } else {
-        palette.subtext0
-    });
+    let icon = agent_icon(row.agent, row.status, frame, palette);
+    let name_style =
+        Style::default().fg(agent_colour(row.agent, palette).unwrap_or(if row.focused {
+            palette.text
+        } else {
+            palette.subtext0
+        }));
     let secondary = Style::default().fg(palette.overlay0);
     for (index, tokens) in row.rows.iter().take(rect.height as usize).enumerate() {
         let x = rect.x.saturating_add(AGENT_INDENT);
@@ -506,7 +517,7 @@ pub(super) fn render_nested_agent(
 }
 
 /// Draw one subagent under the agent running it. It only exists while it is
-/// working, so it always spins.
+/// working, so it always spins, in Claude's orange: Claude is what reports them.
 pub(super) fn render_subagent(
     buffer: &mut Buffer,
     rect: Rect,
@@ -520,7 +531,7 @@ pub(super) fn render_subagent(
         rect.y,
         rect.width.saturating_sub(SUBAGENT_INDENT),
         &format!("{} {label}", SPINNER[frame % SPINNER.len()]),
-        Style::default().fg(palette.overlay0),
+        Style::default().fg(palette.peach),
     );
 }
 
@@ -545,7 +556,11 @@ pub(super) fn render_pane(
         owned.push_str(&format!("  :{port}"));
     }
     let label = owned.as_str();
-    let style = Style::default().fg(if process.is_some() {
+    // A serving pane is purple, so a running server can be spotted in the tree
+    // at a glance; the rest stay grey.
+    let style = Style::default().fg(if !ports.is_empty() {
+        palette.mauve
+    } else if process.is_some() {
         palette.subtext0
     } else {
         palette.overlay0
@@ -689,11 +704,61 @@ mod tests {
     }
 
     #[test]
+    fn claude_is_orange_unless_its_state_says_otherwise() {
+        use crate::api::schema::AgentStatus;
+        use crate::detect::Agent;
+        let palette = Palette::catppuccin();
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Unknown,
+        ] {
+            assert_eq!(
+                agent_icon(Some(Agent::Claude), status, 0, &palette).1.fg,
+                Some(palette.peach),
+                "{status:?}"
+            );
+        }
+        assert_eq!(
+            agent_icon(Some(Agent::Claude), AgentStatus::Done, 0, &palette)
+                .1
+                .fg,
+            Some(palette.green)
+        );
+        assert_eq!(
+            agent_icon(Some(Agent::Claude), AgentStatus::Blocked, 0, &palette)
+                .1
+                .fg,
+            Some(palette.red)
+        );
+        // Agents without a colour of their own stay grey.
+        assert_eq!(
+            agent_icon(Some(Agent::Codex), AgentStatus::Idle, 0, &palette)
+                .1
+                .fg,
+            Some(palette.overlay0)
+        );
+    }
+
+    #[test]
+    fn a_serving_pane_is_purple_and_an_idle_one_grey() {
+        let palette = Palette::catppuccin();
+        let colour = |ports: &[u16]| {
+            let area = Rect::new(0, 0, 30, 1);
+            let mut buffer = Buffer::empty(area);
+            render_pane(&mut buffer, area, Some("bun"), ports, 0, false, &palette);
+            buffer[(AGENT_INDENT, 0)].fg
+        };
+        assert_eq!(colour(&[3000]), palette.mauve);
+        assert_eq!(colour(&[]), palette.subtext0);
+    }
+
+    #[test]
     fn the_agent_icon_spins_while_working_and_checks_when_done() {
         use crate::api::schema::AgentStatus;
         let palette = Palette::catppuccin();
         let working: Vec<&str> = (0..SPINNER.len())
-            .map(|frame| agent_icon(AgentStatus::Working, frame, &palette).0)
+            .map(|frame| agent_icon(None, AgentStatus::Working, frame, &palette).0)
             .collect();
         assert_eq!(
             working
@@ -705,25 +770,28 @@ mod tests {
         );
         // The frame counter wraps rather than panicking on a long-running agent.
         assert_eq!(
-            agent_icon(AgentStatus::Working, SPINNER.len(), &palette).0,
+            agent_icon(None, AgentStatus::Working, SPINNER.len(), &palette).0,
             SPINNER[0]
         );
-        assert_eq!(agent_icon(AgentStatus::Done, 0, &palette).0, "\u{2713}");
+        assert_eq!(
+            agent_icon(None, AgentStatus::Done, 0, &palette).0,
+            "\u{2713}"
+        );
         // Only finishing and blocking earn colour; the rest stay quiet.
         assert_eq!(
-            agent_icon(AgentStatus::Idle, 0, &palette).1.fg,
+            agent_icon(None, AgentStatus::Idle, 0, &palette).1.fg,
             Some(palette.overlay0)
         );
         assert_eq!(
-            agent_icon(AgentStatus::Working, 0, &palette).1.fg,
+            agent_icon(None, AgentStatus::Working, 0, &palette).1.fg,
             Some(palette.overlay0)
         );
         assert_eq!(
-            agent_icon(AgentStatus::Done, 0, &palette).1.fg,
+            agent_icon(None, AgentStatus::Done, 0, &palette).1.fg,
             Some(palette.green)
         );
         assert_eq!(
-            agent_icon(AgentStatus::Idle, 0, &palette).0,
+            agent_icon(None, AgentStatus::Idle, 0, &palette).0,
             AGENT_GLYPH,
             "an idle agent still shows it is an agent"
         );
@@ -731,8 +799,8 @@ mod tests {
         // repaint forever.
         for frame in 0..4 {
             assert_eq!(
-                agent_icon(AgentStatus::Idle, frame, &palette).0,
-                agent_icon(AgentStatus::Idle, 0, &palette).0
+                agent_icon(None, AgentStatus::Idle, frame, &palette).0,
+                agent_icon(None, AgentStatus::Idle, 0, &palette).0
             );
         }
     }

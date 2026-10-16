@@ -12,6 +12,8 @@ use super::*;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    /// Which agent this is, when it is one herdr knows.
+    pub(super) agent: Option<crate::detect::Agent>,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
@@ -323,6 +325,7 @@ pub(super) fn agent_row_with(
     );
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        agent: canonical_agent,
         status: agent.agent_status,
         focused: agent.focused,
         rows,
