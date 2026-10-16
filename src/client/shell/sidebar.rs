@@ -586,36 +586,67 @@ pub(crate) fn stepped_workspace_entries(
     }
 }
 
+/// Workspace metadata token that groups workspaces outside any repo: those
+/// reporting the same value nest under the first of them, the way a repo's
+/// worktrees nest under its checkout. Presentation and navigation only -- a
+/// token group has no repo, so repo actions such as removing a worktree do not
+/// apply to it.
+pub(crate) const GROUP_TOKEN: &str = "group";
+
+/// The group a workspace belongs to, and whether it is a repo's own checkout,
+/// which is what heads a repo's group.
+fn workspace_group(workspace: &ClientShellWorkspace) -> Option<(&str, bool)> {
+    if let Some(worktree) = &workspace.worktree {
+        return Some((worktree.key.as_str(), !worktree.is_linked_worktree));
+    }
+    workspace
+        .tokens
+        .iter()
+        .find(|(token, value)| token == GROUP_TOKEN && !value.is_empty())
+        .map(|(_, value)| (value.as_str(), false))
+}
+
+/// Every group of two or more workspaces: its members in order, and the one
+/// heading it. A repo's group is headed by the repo's own checkout and is not a
+/// group without it; a token group is headed by its first member.
+fn workspace_groups(
+    snapshot: &ClientShellSnapshot,
+) -> (HashMap<&str, Vec<usize>>, HashMap<&str, usize>) {
+    let mut members = HashMap::<&str, Vec<usize>>::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if let Some((key, _)) = workspace_group(workspace) {
+            members.entry(key).or_default().push(index);
+        }
+    }
+    let heads = members
+        .iter()
+        .filter(|(_, indices)| indices.len() >= 2)
+        .filter_map(|(key, indices)| {
+            let repo = snapshot.workspaces[indices[0]].worktree.is_some();
+            let head = if repo {
+                indices.iter().copied().find(|index| {
+                    workspace_group(&snapshot.workspaces[*index]).is_some_and(|(_, head)| head)
+                })?
+            } else {
+                indices[0]
+            };
+            Some((*key, head))
+        })
+        .collect();
+    (members, heads)
+}
+
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<WorkspaceEntry> {
-    let mut members = HashMap::<&str, Vec<usize>>::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        if let Some(worktree) = &workspace.worktree {
-            members.entry(&worktree.key).or_default().push(index);
-        }
-    }
-    let grouped = members
-        .iter()
-        .filter(|(_, indices)| {
-            indices.len() >= 2
-                && indices.iter().any(|index| {
-                    snapshot.workspaces[*index]
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| !worktree.is_linked_worktree)
-                })
-        })
-        .map(|(key, _)| *key)
-        .collect::<HashSet<_>>();
+    let (members, heads) = workspace_groups(snapshot);
     let mut emitted = HashSet::<&str>::new();
     let mut entries = Vec::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let Some(worktree) = workspace
-            .worktree
-            .as_ref()
-            .filter(|worktree| grouped.contains(worktree.key.as_str()))
+        let Some(key) = workspace_group(workspace)
+            .map(|(key, _)| key)
+            .filter(|key| heads.contains_key(key))
         else {
             entries.push(WorkspaceEntry {
                 index,
@@ -624,28 +655,18 @@ pub(crate) fn workspace_entries(
             });
             continue;
         };
-        if !emitted.insert(&worktree.key) {
+        if !emitted.insert(key) {
             continue;
         }
-        let Some(group_members) = members.get(worktree.key.as_str()) else {
+        let (Some(group_members), Some(&parent)) = (members.get(key), heads.get(key)) else {
             continue;
         };
-        let parent = group_members
-            .iter()
-            .copied()
-            .find(|member| {
-                snapshot.workspaces[*member]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| !worktree.is_linked_worktree)
-            })
-            .unwrap_or(index);
         entries.push(WorkspaceEntry {
             index: parent,
             indented: false,
             last_child: false,
         });
-        if collapsed_groups.contains(&worktree.key) {
+        if collapsed_groups.contains(key) {
             if let Some(active) = group_members
                 .iter()
                 .copied()
@@ -675,24 +696,11 @@ pub(crate) fn workspace_entries(
     entries
 }
 
+/// The group a workspace heads, if it heads one.
 fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
-    let workspace = snapshot.workspaces.get(index)?;
-    let worktree = workspace.worktree.as_ref()?;
-    if worktree.is_linked_worktree {
-        return None;
-    }
-    (snapshot
-        .workspaces
-        .iter()
-        .filter(|candidate| {
-            candidate
-                .worktree
-                .as_ref()
-                .is_some_and(|candidate| candidate.key == worktree.key)
-        })
-        .count()
-        >= 2)
-        .then(|| worktree.key.clone())
+    let (key, _) = workspace_group(snapshot.workspaces.get(index)?)?;
+    let (_, heads) = workspace_groups(snapshot);
+    (heads.get(key) == Some(&index)).then(|| key.to_owned())
 }
 
 pub(in crate::client::shell) fn render_parent_group_toggle(
@@ -730,26 +738,24 @@ pub(in crate::client::shell) fn displayed_workspace_status(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
 ) -> crate::api::schema::AgentStatus {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
-    else {
+    let Some((key, _)) = workspace_group(workspace) else {
         return workspace.agent_status;
     };
-    if !collapsed_groups.contains(&worktree.key) {
+    if !collapsed_groups.contains(key) {
         return workspace.agent_status;
     }
-    snapshot
-        .workspaces
-        .iter()
-        .filter(|candidate| {
-            candidate
-                .worktree
-                .as_ref()
-                .is_some_and(|candidate| candidate.key == worktree.key)
-        })
-        .map(|candidate| candidate.agent_status)
+    let (members, heads) = workspace_groups(snapshot);
+    let heads_it = heads
+        .get(key)
+        .is_some_and(|head| std::ptr::eq(&snapshot.workspaces[*head], workspace));
+    if !heads_it {
+        return workspace.agent_status;
+    }
+    members
+        .get(key)
+        .into_iter()
+        .flatten()
+        .map(|member| snapshot.workspaces[*member].agent_status)
         .max_by_key(|status| status_priority(*status))
         .unwrap_or(workspace.agent_status)
 }

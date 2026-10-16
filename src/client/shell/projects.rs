@@ -1166,6 +1166,72 @@ mod tests {
         assert_eq!(kinds(&rows), ["workspace", "agent"]);
     }
 
+    /// Three spaces outside any repo; the first and last report `group=sandbox`.
+    fn sandbox_snapshot() -> crate::protocol::ClientShellSnapshot {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        let base = snapshot.workspaces[0].clone();
+        snapshot.workspaces = (1..=3)
+            .map(|number| {
+                let mut workspace = base.clone();
+                workspace.workspace_id = format!("ws_{number}");
+                workspace.focused = number == 1;
+                workspace.worktree = None;
+                if number != 2 {
+                    workspace.tokens = vec![("group".into(), "sandbox".into())];
+                }
+                workspace
+            })
+            .collect();
+        snapshot
+    }
+
+    fn listed(
+        snapshot: &crate::protocol::ClientShellSnapshot,
+        collapsed: &HashSet<String>,
+    ) -> Vec<(String, bool)> {
+        super::super::sidebar::workspace_entries(snapshot, collapsed)
+            .iter()
+            .map(|entry| {
+                (
+                    snapshot.workspaces[entry.index].workspace_id.clone(),
+                    entry.indented,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spaces_sharing_a_group_token_nest_under_the_first() {
+        let snapshot = sandbox_snapshot();
+        assert_eq!(
+            listed(&snapshot, &HashSet::new()),
+            [
+                ("ws_1".into(), false),
+                ("ws_3".into(), true),
+                ("ws_2".into(), false)
+            ]
+        );
+        // Folding the group keeps its head and drops the rest.
+        assert_eq!(
+            listed(&snapshot, &HashSet::from(["sandbox".to_string()])),
+            [("ws_1".into(), false), ("ws_2".into(), false)]
+        );
+    }
+
+    #[test]
+    fn a_group_token_on_one_space_alone_groups_nothing() {
+        let mut snapshot = sandbox_snapshot();
+        snapshot.workspaces[2].tokens.clear();
+        assert_eq!(
+            listed(&snapshot, &HashSet::new()),
+            [
+                ("ws_1".into(), false),
+                ("ws_2".into(), false),
+                ("ws_3".into(), false)
+            ]
+        );
+    }
+
     #[test]
     fn a_lone_agent_shows_without_a_fold() {
         let mut snapshot = crate::client::shell::tests::snapshot();
